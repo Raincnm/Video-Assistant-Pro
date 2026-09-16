@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.1
+// @version      2.4.2
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
