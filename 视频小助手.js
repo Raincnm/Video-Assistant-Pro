@@ -11,6 +11,8 @@
 // @grant        GM_getValue
 // @run-at       document-idle
 // @icon         https://img.001315.xyz/file/tg/1789381092104.webp
+// @downloadURL  https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
+// @updateURL    https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // ==/UserScript==
 
 (function () {
