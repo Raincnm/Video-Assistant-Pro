@@ -2,17 +2,18 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.0
+// @version      2.4.1
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
 // @exclude      *://localhost*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_openInTab
+// @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // @icon         https://img.001315.xyz/file/tg/1789381092104.webp
-// @downloadURL  https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
-// @updateURL    https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // ==/UserScript==
 
 (function () {
@@ -21,6 +22,85 @@
     // LIBVIO 等站点的视频常在跨域 iframe 内。顶层负责 UI，iframe 负责真实 video。
     const VFA_IS_TOP = window.top === window.self;
     let vfaRemoteVideoState = null;
+
+    // GitHub 在线更新检测
+    const VFA_UPDATE_URL = 'https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js';
+    const VFA_CURRENT_VERSION = '2.4.1';
+    let vfaUpdateInfo = { available: false, version: '', checking: false };
+
+    function vfaCompareVersions(a, b) {
+        const pa = String(a || '').replace(/^v/i, '').split(/[.+_-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
+        const pb = String(b || '').replace(/^v/i, '').split(/[.+_-]/).map(x => /^\d+$/.test(x) ? Number(x) : x);
+        const n = Math.max(pa.length, pb.length);
+        for (let i = 0; i < n; i++) {
+            const x = pa[i] ?? 0, y = pb[i] ?? 0;
+            if (typeof x === 'number' && typeof y === 'number') {
+                if (x !== y) return x - y;
+            } else {
+                const c = String(x).localeCompare(String(y), undefined, { numeric: true });
+                if (c) return c;
+            }
+        }
+        return 0;
+    }
+
+    function vfaSetUpdateBadge(version = '') {
+        const badge = document.getElementById('vfa-update-badge');
+        if (!badge) return;
+        if (version) {
+            badge.textContent = `↑ 有新版本 ${version}`;
+            badge.title = `GitHub 已发布 ${version}，点击更新`;
+            badge.classList.add('show');
+        } else {
+            badge.classList.remove('show');
+        }
+    }
+
+    function vfaCheckForUpdate() {
+        if (!VFA_IS_TOP || vfaUpdateInfo.checking) return;
+        vfaUpdateInfo.checking = true;
+        try {
+            if (typeof GM_xmlhttpRequest !== 'function') throw new Error('GM_xmlhttpRequest unavailable');
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: VFA_UPDATE_URL + '?_vfa_update=' + Date.now(),
+                nocache: true,
+                timeout: 12000,
+                onload: response => {
+                    vfaUpdateInfo.checking = false;
+                    if (response.status < 200 || response.status >= 300) return;
+                    const m = String(response.responseText || '').match(/@version\s+([^\s]+)/);
+                    const remote = m ? m[1].trim() : '';
+                    if (!remote) return;
+                    if (vfaCompareVersions(remote, VFA_CURRENT_VERSION) > 0) {
+                        vfaUpdateInfo = { available: true, version: remote, checking: false };
+                        vfaSetUpdateBadge(remote);
+                    } else {
+                        vfaUpdateInfo = { available: false, version: remote, checking: false };
+                        vfaSetUpdateBadge('');
+                    }
+                },
+                onerror: () => { vfaUpdateInfo.checking = false; },
+                ontimeout: () => { vfaUpdateInfo.checking = false; }
+            });
+        } catch {
+            vfaUpdateInfo.checking = false;
+        }
+    }
+
+    function vfaStartUpdate() {
+        if (!vfaUpdateInfo.available) return;
+        toast(`正在打开 ${vfaUpdateInfo.version} 更新…`);
+        try {
+            if (typeof GM_openInTab === 'function') {
+                GM_openInTab(VFA_UPDATE_URL, { active: true, insert: true, setParent: true });
+            } else {
+                window.open(VFA_UPDATE_URL, '_blank');
+            }
+        } catch {
+            window.open(VFA_UPDATE_URL, '_blank');
+        }
+    }
 
     function vfaSendToParent(type, data = {}) {
         if (VFA_IS_TOP) return;
@@ -212,6 +292,32 @@
 #vfa-panel { scrollbar-width:none !important; -ms-overflow-style:none !important; }
 #vfa-panel .vfa-skip-input { width:112px !important; min-width:112px !important; text-align:center; letter-spacing:.2px; }
 #vfa-panel .vfa-skip-input::placeholder { opacity:.45; }
+
+#vfa-update-badge {
+    display:none;
+    align-items:center;
+    justify-content:center;
+    max-width:118px;
+    min-height:24px;
+    padding:0 9px;
+    margin-left:auto;
+    border:1px solid rgba(255, 184, 77, .38);
+    border-radius:999px;
+    background:rgba(255, 184, 77, .12);
+    color:#ffd28a;
+    font-size:11px;
+    font-weight:700;
+    white-space:nowrap;
+    cursor:pointer;
+    user-select:none;
+    transition:all .18s ease;
+}
+#vfa-update-badge.show { display:inline-flex; }
+#vfa-update-badge:hover {
+    background:rgba(255, 184, 77, .2);
+    border-color:rgba(255, 184, 77, .58);
+}
+
 #vfa-panel .vfa-skip-input:focus { user-select:text !important; -webkit-user-select:text !important; cursor:text; }
 
 
@@ -4073,6 +4179,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     <span>视频小助手 Pro</span>
 </span>
 
+      <span id="vfa-update-badge" role="button" tabindex="0" title="检查更新">↑ 有新版本</span>
       <span class="vfa-chip vfa-fps" id="vfa-fps">-- FPS</span>
     </div>
     <div class="vfa-label">⚡ 倍速播放</div>
@@ -4225,6 +4332,13 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
         state.wrap = root.querySelector('#vfa-wrap');
         state.panel = root.querySelector('#vfa-panel');
+        const updateBadge = root.querySelector('#vfa-update-badge');
+        if (updateBadge) {
+            updateBadge.addEventListener('click', vfaStartUpdate);
+            updateBadge.addEventListener('keydown', e => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); vfaStartUpdate(); }
+            });
+        }
         applyPos();
         initDrag(root.querySelector('#vfa-fab'));
         // 打开面板时同步一次开关状态，防止 SPA 页面刷新后面板与实际状态不一致
@@ -5257,6 +5371,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     const init = () => {
         if (!VFA_IS_TOP) return;
         buildUI();
+
+    setTimeout(vfaCheckForUpdate, 1200);
+    setInterval(vfaCheckForUpdate, 10 * 60 * 1000);
 
         setSmooth(state.smoothMode);
         setDanmaku(state.hideDanmaku);
