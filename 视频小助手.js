@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.3.0
+// @version      2.4.0
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
@@ -18,8 +18,127 @@
 (function () {
     'use strict';
 
-    // 仅在顶层页面运行，避免直播间播放器 iframe 再创建一个重复悬浮球
-    if (window.top !== window.self) return;
+    // LIBVIO 等站点的视频常在跨域 iframe 内。顶层负责 UI，iframe 负责真实 video。
+    const VFA_IS_TOP = window.top === window.self;
+    let vfaRemoteVideoState = null;
+
+    function vfaSendToParent(type, data = {}) {
+        if (VFA_IS_TOP) return;
+        try { window.parent.postMessage({ source: 'vfa-pro', type, ...data }, '*'); } catch { }
+    }
+
+    function vfaBroadcastToFrames(type, data = {}) {
+        if (!VFA_IS_TOP) return;
+        const message = { source: 'vfa-pro', type, ...data };
+        document.querySelectorAll('iframe').forEach(frame => {
+            try { frame.contentWindow?.postMessage(message, '*'); } catch { }
+        });
+    }
+
+    // 同源 iframe 可以直接访问 video。跨域 iframe 则依赖 postMessage 桥。
+    // 这样即使播放器只是普通同源 iframe，也不需要额外注入脚本。
+    function vfaCollectVideosFromRoot(root, vids, seen) {
+        if (!root) return;
+        try {
+            root.querySelectorAll('video').forEach(v => {
+                if (!seen.has(v)) { seen.add(v); vids.push(v); }
+            });
+            root.querySelectorAll('*').forEach(el => {
+                if (el.shadowRoot) vfaCollectVideosFromRoot(el.shadowRoot, vids, seen);
+            });
+        } catch { }
+    }
+
+    function vfaCollectSameOriginFrameVideos(root, vids, seen, depth = 0) {
+        if (!root || depth > 4) return;
+        try {
+            root.querySelectorAll('iframe,frame').forEach(frame => {
+                try {
+                    const doc = frame.contentDocument;
+                    if (!doc) return;
+                    vfaCollectVideosFromRoot(doc, vids, seen);
+                    vfaCollectSameOriginFrameVideos(doc, vids, seen, depth + 1);
+                } catch { }
+            });
+        } catch { }
+    }
+
+    if (VFA_IS_TOP) {
+        window.addEventListener('message', e => {
+            const d = e.data;
+            if (!d || d.source !== 'vfa-pro') return;
+            if (d.type === 'vfa-ready') {
+                if (state) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec });
+                return;
+            }
+            if (d.type === 'video-state') {
+                vfaRemoteVideoState = d;
+                updateVideoTimeline();
+                updatePlayPauseUI();
+                if (state) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec });
+                if (state && state.open) syncSkipControls(null);
+                else updateSkipCurrentMarkers(null);
+            } else if (d.type === 'video-cleared') {
+                vfaRemoteVideoState = null;
+                updateVideoTimeline();
+                updatePlayPauseUI();
+                if (state && state.open) syncSkipControls(null);
+                else updateSkipCurrentMarkers(null);
+            }
+        });
+    } else {
+        window.addEventListener('message', e => {
+            const d = e.data;
+            if (!d || d.source !== 'vfa-pro') return;
+            try {
+                // 子 iframe 的状态继续向上转发，解决多层 iframe 播放器。
+                if (d.type === 'video-state' || d.type === 'video-cleared') {
+                    vfaSendToParent(d.type, d);
+                    return;
+                }
+                if (d.type === 'vfa-ready') {
+                    vfaSendToParent('vfa-ready');
+                    return;
+                }
+                if (d.type === 'skip-settings') {
+                    if (typeof d.skipIntro === 'boolean') state.skipIntro = d.skipIntro;
+                    if (typeof d.skipOutro === 'boolean') state.skipOutro = d.skipOutro;
+                    if (Number.isFinite(Number(d.skipIntroSec))) state.skipIntroSec = Number(d.skipIntroSec);
+                    if (Number.isFinite(Number(d.skipOutroSec))) state.skipOutroSec = Number(d.skipOutroSec);
+                    state.skipIntroApplied = false;
+                    state.skipOutroTriggered = false;
+                    return;
+                }
+                const v = getVideo();
+                if (!v) return;
+                if (d.type === 'seek') {
+                    const target = Number(d.time);
+                    if (Number.isFinite(target)) v.currentTime = Math.max(0, target);
+                } else if (d.type === 'play-pause') {
+                    v.paused ? v.play().catch(() => {}) : v.pause();
+                } else if (d.type === 'set-speed') {
+                    const speed = Number(d.speed);
+                    if (Number.isFinite(speed)) v.playbackRate = Math.min(16, Math.max(0.25, speed));
+                } else if (d.type === 'set-volume') {
+                    const volume = Number(d.volume);
+                    if (Number.isFinite(volume)) v.volume = Math.min(1, Math.max(0, volume));
+                } else if (d.type === 'set-muted') {
+                    v.muted = !!d.muted;
+                } else if (d.type === 'fullscreen') {
+                    if (v.requestFullscreen) v.requestFullscreen().catch(() => {});
+                } else if (d.type === 'pip') {
+                    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+                    else if (v.requestPictureInPicture) v.requestPictureInPicture().catch(() => {});
+                } else if (d.type === 'transform') {
+                    try {
+                        v.style.transformOrigin = 'center center';
+                        v.style.transform = `rotate(${Number(d.rotation) || 0}deg) scaleX(${d.mirrored ? -1 : 1})`;
+                    } catch { }
+                }
+            } catch { }
+        });
+        try { vfaSendToParent('vfa-ready'); } catch { }
+    }
 
     // GM 存储 + localStorage 双保险，确保设置永不丢失
     const store = {
@@ -1843,17 +1962,90 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         el._t = setTimeout(() => el.classList.remove('show'), 1400);
     }
 
+    function vfaGetPlayerStatus() {
+        const local = getVideo();
+        if (local) return { kind: 'local', video: local };
+        if (VFA_IS_TOP && vfaRemoteVideoState) return { kind: 'iframe', video: null };
+        return { kind: 'none', video: null };
+    }
+
+    function vfaShowPlayerStatus() {
+        if (!VFA_IS_TOP) return;
+        const status = vfaGetPlayerStatus();
+        const iframes = [...document.querySelectorAll('iframe')].length;
+        if (status.kind === 'local') {
+            toast(`✓ 已找到视频${iframes ? ` · iframe ${iframes}` : ''}`);
+        } else if (status.kind === 'iframe') {
+            const d = Number(vfaRemoteVideoState.duration) || 0;
+            toast(`✓ 播放器已连接 · ${d > 0 ? formatTime(d) : '等待时长'}`);
+        } else {
+            toast(`⚠️ 未找到视频 · 页面 iframe ${iframes} 个`);
+        }
+    }
+
     function getVideo() {
-        const vids = [...document.querySelectorAll('video')].filter(v => v.videoWidth);
-        if (!vids.length) return null;
-        // 优先：正在播放的；其次：视口内可见面积最大的（解决抖音多视频堆叠时播错对象）
-        const vis = v => {
-            const r = v.getBoundingClientRect();
-            const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
-            const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-            return w * h;
+        const vids = [];
+        const seen = new Set();
+
+        const collect = root => {
+            if (!root) return;
+            try {
+                root.querySelectorAll('video').forEach(v => {
+                    if (!seen.has(v)) {
+                        seen.add(v);
+                        vids.push(v);
+                    }
+                });
+                root.querySelectorAll('*').forEach(el => {
+                    if (el.shadowRoot) collect(el.shadowRoot);
+                });
+            } catch { }
         };
-        return vids.find(v => !v.paused && !v.ended) || vids.sort((a, b) => vis(b) - vis(a))[0];
+
+        collect(document);
+        if (VFA_IS_TOP) vfaCollectSameOriginFrameVideos(document, vids, seen);
+        if (!vids.length) return null;
+
+        const vis = v => {
+            try {
+                const r = v.getBoundingClientRect();
+                const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+                const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+                return w * h;
+            } catch {
+                return 0;
+            }
+        };
+
+        // 1. 优先当前正在播放的视频。
+        const playing = vids.find(v => {
+            try { return !v.paused && !v.ended; } catch { return false; }
+        });
+        if (playing) return playing;
+
+        // 2. 优先已经拿到有效 duration 的视频。
+        const withDuration = vids
+            .filter(v => {
+                try {
+                    const d = Number(v.duration);
+                    return Number.isFinite(d) && d > 0;
+                } catch {
+                    return false;
+                }
+            })
+            .sort((a, b) => vis(b) - vis(a));
+        if (withDuration.length) return withDuration[0];
+
+        // 3. 再找已经加载媒体元数据的视频。
+        const ready = vids
+            .filter(v => {
+                try { return v.readyState >= 1 || v.currentTime > 0; } catch { return false; }
+            })
+            .sort((a, b) => vis(b) - vis(a));
+        if (ready.length) return ready[0];
+
+        // 4. 最后按可见面积选择，兼容手机播放器刚创建但尚未完成 metadata 的阶段。
+        return vids.sort((a, b) => vis(b) - vis(a))[0];
     }
 
     /* =========================================================
@@ -2245,9 +2437,27 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             toast(`⚡ ${v}x 倍速`);
             const el = document.getElementById('vfa-speed');
             if (el) el.textContent = (+v.toFixed(2)) + 'x';
+        } else if (VFA_IS_TOP && vfaRemoteVideoState) {
+            try { vfaBroadcastToFrames('set-speed', { speed: v }); } catch { }
+            if (state.rememberSpeed) { state.speed = v; store.set('speed', v); }
+            toast(`⚡ ${v}x 倍速`);
+            const el = document.getElementById('vfa-speed');
+            if (el) el.textContent = (+v.toFixed(2)) + 'x';
         }
     }
-    const nudge = s => { const v = getVideo(); if (v) { v.currentTime = Math.min(v.duration || Infinity, Math.max(0, v.currentTime + s)); toast(s > 0 ? `⏩ +${s}s` : `⏪ ${s}s`); } };
+    const nudge = s => {
+        const v = getVideo();
+        if (v) {
+            v.currentTime = Math.min(v.duration || Infinity, Math.max(0, v.currentTime + s));
+            toast(s > 0 ? `⏩ +${s}s` : `⏪ ${s}s`);
+        } else if (VFA_IS_TOP && vfaRemoteVideoState) {
+            const d = Number(vfaRemoteVideoState.duration) || Infinity;
+            const t = Number(vfaRemoteVideoState.currentTime) || 0;
+            const target = Math.min(d, Math.max(0, t + s));
+            vfaBroadcastToFrames('seek', { time: target });
+            toast(s > 0 ? `⏩ +${s}s` : `⏪ ${s}s`);
+        }
+    };
     /* =========================================================
        VFA 2.2 · 增强播放控制
        ========================================================= */
@@ -2586,9 +2796,12 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     function togglePlay() {
         const v = getVideo();
         if (v) {
-            const willPlay = v.paused;              // 先取状态再切换，Toast 文案才正确
+            const willPlay = v.paused;
             willPlay ? v.play() : v.pause();
             toast(willPlay ? '▶ 播放' : '⏸ 暂停');
+        } else if (VFA_IS_TOP && vfaRemoteVideoState) {
+            try { vfaBroadcastToFrames('play-pause'); } catch { }
+            toast(vfaRemoteVideoState.paused ? '▶ 播放' : '⏸ 暂停');
         }
     }
     /* =========================================================
@@ -3014,10 +3227,32 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             : `${m}:${String(s).padStart(2, '0')}`;
     }
 
+    function getSkipMediaState(v = getVideo()) {
+        if (v) {
+            try {
+                const duration = Number(v.duration);
+                const currentTime = Number(v.currentTime);
+                return {
+                    duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+                    currentTime: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : 0
+                };
+            } catch { }
+        }
+
+        if (VFA_IS_TOP && vfaRemoteVideoState) {
+            const duration = Number(vfaRemoteVideoState.duration);
+            const currentTime = Number(vfaRemoteVideoState.currentTime);
+            return {
+                duration: Number.isFinite(duration) && duration > 0 ? duration : 0,
+                currentTime: Number.isFinite(currentTime) && currentTime >= 0 ? currentTime : 0
+            };
+        }
+
+        return { duration: 0, currentTime: 0 };
+    }
+
     function getSkipDuration(v) {
-        return v && Number.isFinite(v.duration) && v.duration > 0 && v.duration !== Infinity
-            ? v.duration
-            : 0;
+        return getSkipMediaState(v).duration;
     }
     function parseTimeInput(value) {
         const raw = String(value ?? '').trim();
@@ -3058,7 +3293,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     }
 
     function updateSkipTimeFormat(v) {
-        const duration = v && Number.isFinite(v.duration) ? v.duration : 0;
+        const duration = getSkipMediaState(v).duration;
         const label = duration > 3600 ? '（时:分:秒）' : '（分:秒）';
         const introFormat = document.getElementById('vfa-intro-format');
         const outroFormat = document.getElementById('vfa-outro-format');
@@ -3067,8 +3302,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     }
 
     function updateSkipCurrentMarkers(v = getVideo()) {
-        const duration = getSkipDuration(v);
-        const current = v && Number.isFinite(Number(v.currentTime)) ? Math.max(0, Number(v.currentTime)) : 0;
+        const media = getSkipMediaState(v);
+        const duration = media.duration;
+        const current = media.currentTime;
         const percent = duration > 0 ? Math.min(100, Math.max(0, current / duration * 100)) : 0;
         ['intro', 'outro'].forEach(type => {
             const marker = document.getElementById(`vfa-${type}-current`);
@@ -3086,7 +3322,8 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         const outroOut = document.getElementById('vfa-outro-out');
         if (!introRange || !outroRange) return;
 
-        const duration = getSkipDuration(v);
+        const media = getSkipMediaState(v);
+        const duration = media.duration;
         // 每次检测到新视频/新一集，都从同一个长期定义读取。
         // 不再读取“当前集”专属键，确保自动下一集一定继承上一集设置。
         const mem = getSkipGlobalMemory();
@@ -3120,7 +3357,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
     function setSkipIntroValue(value, save = true) {
         const v = getVideo();
-        const duration = getSkipDuration(v);
+        const duration = getSkipMediaState(v).duration;
         let n = parseTimeInput(value);
         if (n == null) return false;
         n = Math.max(0, n);
@@ -3136,12 +3373,13 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         store.set('skipIntroSec', state.skipIntroSec);
         store.set('skipIntroDefined', state.skipIntroSec);
         state.skipIntroApplied = false;
+        if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec });
         return true;
     }
 
     function setSkipOutroValue(value, save = true) {
         const v = getVideo();
-        const duration = getSkipDuration(v);
+        const duration = getSkipMediaState(v).duration;
         let n = parseTimeInput(value);
         if (n == null) return false;
         n = Math.max(0, n);
@@ -3157,6 +3395,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         store.set('skipOutroSec', state.skipOutroSec);
         store.set('skipOutroDefined', state.skipOutroSec);
         state.skipOutroTriggered = false;
+        if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec });
         return true;
     }
 
@@ -3261,7 +3500,13 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     let lastSkipVideo = null;
     setInterval(() => {
         const v = getVideo();
-        if (!v) return;
+        if (!v) {
+            if (VFA_IS_TOP) {
+                if (state.open) syncSkipControls(null);
+                else updateSkipCurrentMarkers(null);
+            }
+            return;
+        }
         if (v !== lastSkipVideo) {
             lastSkipVideo = v;
             lastSkipSignature = '';
@@ -3388,6 +3633,20 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         const duration = document.getElementById('vfa-duration');
         if (!range || !current || !duration) return;
 
+        if (!v && VFA_IS_TOP && vfaRemoteVideoState) {
+            const d = Number(vfaRemoteVideoState.duration);
+            const t = Number(vfaRemoteVideoState.currentTime);
+            const validDuration = Number.isFinite(d) && d > 0;
+            const safeTime = Number.isFinite(t) && t >= 0 ? t : 0;
+            const ratio = validDuration ? Math.min(1, Math.max(0, safeTime / d)) : 0;
+            if (!vfaTimelineDragging) range.value = String(ratio * 1000);
+            current.textContent = formatVideoControlTime(safeTime);
+            duration.textContent = validDuration ? formatVideoControlTime(d) : '0:00';
+            const pct = ratio * 100;
+            range.style.background = `linear-gradient(to right,rgba(96,165,250,.95) 0%,rgba(96,165,250,.95) ${pct}%,rgba(255,255,255,.22) ${pct}%,rgba(255,255,255,.22) 100%)`;
+            return;
+        }
+
         if (!v) {
             range.value = 0;
             current.textContent = '0:00';
@@ -3412,7 +3671,18 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     function seekFromTimeline() {
         const range = document.getElementById('vfa-video-progress');
         const v = getVideo();
-        if (!range || !v) return;
+        if (!range) return;
+        if (!v && VFA_IS_TOP && vfaRemoteVideoState) {
+            const d = Number(vfaRemoteVideoState.duration);
+            if (!Number.isFinite(d) || d <= 0) return;
+            const ratio = Math.min(1, Math.max(0, Number(range.value) / 1000));
+            const target = ratio * d;
+            try { vfaBroadcastToFrames('seek', { time: target }); } catch { }
+            const current = document.getElementById('vfa-current-time');
+            if (current) current.textContent = formatVideoControlTime(target);
+            return;
+        }
+        if (!v) return;
         const d = Number(v.duration);
         if (!Number.isFinite(d) || d <= 0) return;
         const ratio = Math.min(1, Math.max(0, Number(range.value) / 1000));
@@ -3498,6 +3768,48 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         updateVideoTimeline(v);
         updatePlayPauseUI(v);
     }, 200);
+
+    // 跨域 iframe 视频状态桥。LIBVIO 的 /play/ 页面可能把真正 video 放在 iframe 内，
+    // 顶层页面无法直接读取跨域 video 的 duration/currentTime，只能通过 postMessage 同步。
+    if (!VFA_IS_TOP) {
+        let lastFrameSignature = '';
+        const reportFrameVideo = () => {
+            const v = getVideo();
+            if (!v) {
+                if (lastFrameSignature) {
+                    lastFrameSignature = '';
+                    vfaSendToParent('video-cleared');
+                }
+                return;
+            }
+            try {
+                const d = Number(v.duration);
+                const t = Number(v.currentTime);
+                const src = v.currentSrc || v.src || '';
+                const signature = `${src}|${Number.isFinite(d) ? d : 0}`;
+                lastFrameSignature = signature;
+                vfaSendToParent('video-state', {
+                    currentTime: Number.isFinite(t) ? t : 0,
+                    duration: Number.isFinite(d) && d > 0 ? d : 0,
+                    paused: !!v.paused,
+                    ended: !!v.ended,
+                    readyState: Number(v.readyState) || 0,
+                    signature
+                });
+            } catch { }
+        };
+        reportFrameVideo();
+        setInterval(reportFrameVideo, 200);
+        try {
+            const mo = new MutationObserver(() => reportFrameVideo());
+            mo.observe(document.documentElement || document, { childList: true, subtree: true });
+        } catch { }
+        ['timeupdate', 'loadedmetadata', 'durationchange', 'progress', 'seeking', 'seeked', 'play', 'pause', 'ended'].forEach(type => {
+            document.addEventListener(type, e => {
+                if (e.target?.tagName === 'VIDEO') reportFrameVideo();
+            }, true);
+        });
+    }
 
     /* ---------------- 位置 & 弹出方向 ---------------- */
     const GAP = 12;
@@ -3970,8 +4282,8 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
                 if (t === 'smooth') { setSmooth(on); toast(on ? '🚀 流畅模式已开启' : '🚀 流畅模式已关闭'); }
                 if (t === 'freezeDecor') { setFreeze(on); toast(on ? '🧊 装饰动画已冻结' : '🧊 装饰动画已恢复'); }
                 if (t === 'danmaku') { setDanmaku(on); toast(on ? '🚫 弹幕已屏蔽' : '💬 弹幕已恢复'); }
-                if (t === 'skipIntro') { syncSkipControls(getVideo(), true); toast(on ? `⏭ 跳过片头 ${formatTime(state.skipIntroSec)}` : '⏭ 跳过片头已关'); }
-                if (t === 'skipOutro') { syncSkipControls(getVideo(), true); toast(on ? `⏭ 片尾从 ${formatTime(state.skipOutroSec)} 自动下一集` : '⏭ 跳过片尾已关'); }
+                if (t === 'skipIntro') { syncSkipControls(getVideo(), true); if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro: on, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec }); toast(on ? `⏭ 跳过片头 ${formatTime(state.skipIntroSec)}` : '⏭ 跳过片头已关'); }
+                if (t === 'skipOutro') { syncSkipControls(getVideo(), true); if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: on, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec }); toast(on ? `⏭ 片尾从 ${formatTime(state.skipOutroSec)} 自动下一集` : '⏭ 跳过片尾已关'); }
                 if (t === 'idlePause') {
                     toast(on ? '😴 无人观看自动暂停已开启' : '😴 无人观看自动暂停已关闭');
                     document.getElementById('vfa-idle-row')?.classList.toggle('show', on);
@@ -4060,18 +4372,20 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
         function setSkipIntroToCurrentTime() {
             const v = getVideo();
-            if (!v) { toast('⚠️ 当前没有可用视频'); return; }
-            const t = Math.max(0, Number(v.currentTime) || 0);
+            const media = getSkipMediaState(v);
+            if (!v && !(VFA_IS_TOP && vfaRemoteVideoState)) { toast('⚠️ 当前没有可用视频'); return; }
+            const t = media.currentTime;
             setSkipIntroValue(t);
-            toast(`⏭ 片头已定位到 ${formatSkipTime(t, getSkipDuration(v))}`);
+            toast(`⏭ 片头已定位到 ${formatSkipTime(t, media.duration)}`);
         }
 
         function setSkipOutroToCurrentTime() {
             const v = getVideo();
-            if (!v) { toast('⚠️ 当前没有可用视频'); return; }
-            const t = Math.max(0, Number(v.currentTime) || 0);
+            const media = getSkipMediaState(v);
+            if (!v && !(VFA_IS_TOP && vfaRemoteVideoState)) { toast('⚠️ 当前没有可用视频'); return; }
+            const t = media.currentTime;
             setSkipOutroValue(t);
-            toast(`⏭ 片尾已定位到 ${formatSkipTime(t, getSkipDuration(v))}`);
+            toast(`⏭ 片尾已定位到 ${formatSkipTime(t, media.duration)}`);
         }
 
         function resetSkipIntroValue() {
@@ -4941,6 +5255,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         if (old && !state.dragging) old.remove();
     }, 2000);
     const init = () => {
+        if (!VFA_IS_TOP) return;
         buildUI();
 
         setSmooth(state.smoothMode);
