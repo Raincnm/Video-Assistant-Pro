@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.5
+// @version      2.4.6
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
@@ -287,7 +287,14 @@
         webFullscreenVideo: null,
         webFullscreenStyleBackup: null,
         webFullscreenViewportResize: null,
-        webFullscreenResizeBound: null
+        webFullscreenResizeBound: null,
+        webFullscreenNative: false,
+        webFullscreenPopover: false,
+        webFullscreenReparented: false,
+        webFullscreenParent: null,
+        webFullscreenNextSibling: null,
+        webFullscreenPlaceholder: null,
+        webFullscreenParentStyleBackup: null
 
     };
 
@@ -915,8 +922,28 @@ html[vfa-smooth] #vfa-fab, html[vfa-smooth] #vfa-panel { backdrop-filter:none !i
     overflow:visible !important;
 }
 .vfa-web-fullscreen-target video {
+    width:100% !important;
+    height:100% !important;
     max-width:none !important;
     max-height:none !important;
+    object-fit:contain !important;
+}
+
+/* 跨域 iframe 网页全屏：保持 iframe 原始渲染尺寸，只做视觉缩放。
+   不调用 Fullscreen API，不进入 Popover Top Layer，不移动 iframe。 */
+.vfa-web-fullscreen-iframe-scale {
+    position:fixed !important;
+    left:var(--vfa-left, 0px) !important;
+    top:var(--vfa-top, 0px) !important;
+    width:var(--vfa-frame-width, auto) !important;
+    height:var(--vfa-frame-height, auto) !important;
+    max-width:none !important;
+    max-height:none !important;
+    margin:0 !important;
+    transform-origin:top left !important;
+    transform:scale(var(--vfa-scale, 1)) !important;
+    z-index:2147483638 !important;
+    background:#000 !important;
 }
 
 /*.vfa-chip {
@@ -2763,7 +2790,224 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         return best || v.parentElement;
     }
 
-    function exitWebFullscreen(showToast = true) {
+    function vfaHasFixedContainingBlock(el) {
+        let p = el?.parentElement;
+        while (p && p !== document.body && p !== document.documentElement) {
+            try {
+                const cs = getComputedStyle(p);
+                const will = cs.willChange || '';
+                const contain = cs.contain || '';
+                if (cs.transform !== 'none' || cs.perspective !== 'none' ||
+                    cs.filter !== 'none' || cs.backdropFilter !== 'none' ||
+                    contain !== 'none' || /transform|perspective|filter/.test(will)) {
+                    return true;
+                }
+            } catch {}
+            p = p.parentElement;
+        }
+        return false;
+    }
+
+    function vfaHandlePopoverToggle(e) {
+        const target = e.currentTarget;
+        if (!(target instanceof HTMLElement) || e.newState !== 'closed') return;
+        if (state.webFullscreen !== 'popover' || state.webFullscreenVideo !== target) return;
+        try { target.classList.remove('vfa-web-fullscreen-popover'); } catch {}
+        try { target.removeEventListener('toggle', vfaHandlePopoverToggle); } catch {}
+        state.webFullscreen = false;
+        state.webFullscreenVideo = null;
+        state.webFullscreenPopover = false;
+        try {
+            window.dispatchEvent(new Event('resize'));
+            document.querySelectorAll('video').forEach(x => {
+                try { x.dispatchEvent(new Event('resize')); } catch {}
+            });
+        } catch {}
+        toast('🖥️ 已退出网页全屏');
+    }
+
+    function vfaEnterPopoverFullscreen(target) {
+        if (!target || typeof target.showPopover !== 'function' || typeof target.hidePopover !== 'function') return false;
+        try {
+            target.setAttribute('popover', 'auto');
+            target.classList.add('vfa-web-fullscreen-popover');
+            target.addEventListener('toggle', vfaHandlePopoverToggle);
+            state.webFullscreen = 'popover';
+            state.webFullscreenVideo = target;
+            state.webFullscreenPopover = true;
+            target.showPopover();
+            toast('🖥️ 已进入网页全屏');
+            return true;
+        } catch (err) {
+            target.classList.remove('vfa-web-fullscreen-popover');
+            try { target.removeEventListener('toggle', vfaHandlePopoverToggle); } catch {}
+            state.webFullscreen = false;
+            state.webFullscreenVideo = null;
+            state.webFullscreenPopover = false;
+            console.warn('[VFA] Popover web fullscreen unavailable:', err);
+            return false;
+        }
+    }
+
+    async function vfaEnterNativeFullscreen(target) {
+        if (!target || typeof target.requestFullscreen !== 'function') return false;
+        try {
+            if (target.tagName === 'IFRAME') {
+                try { target.setAttribute('allow', 'fullscreen'); } catch {}
+                try { target.setAttribute('allowfullscreen', 'true'); } catch {}
+                try { target.allowFullscreen = true; } catch {}
+            }
+            target.classList.add('vfa-web-fullscreen-native');
+            await target.requestFullscreen();
+            state.webFullscreen = 'native';
+            state.webFullscreenVideo = target;
+            state.webFullscreenNative = true;
+            toast('🖥️ 已进入网页全屏');
+            return true;
+        } catch (err) {
+            target.classList.remove('vfa-web-fullscreen-native');
+            console.warn('[VFA] Native fullscreen unavailable, fallback to page fullscreen:', err);
+            return false;
+        }
+    }
+
+    function vfaPrepareReparentFullscreen(target) {
+        if (!target || !document.body || target === document.body || target === document.documentElement) return false;
+        try {
+            const parent = target.parentElement;
+            if (!parent || parent === document.body) return false;
+
+            // 不能只放一个 Comment 占位符。很多播放器的父容器高度依赖 iframe
+            // 本身，iframe 被搬走后父容器会瞬间塌缩，恢复时站点自己的响应式布局
+            // 就可能拿到错误尺寸，最终出现“退出后视频变小/跑位”。
+            const rect = target.getBoundingClientRect();
+            const cs = getComputedStyle(target);
+            const placeholder = document.createElement('div');
+            placeholder.setAttribute('data-vfa-web-fullscreen-placeholder', '1');
+            placeholder.style.setProperty('display', cs.display === 'inline' ? 'inline-block' : cs.display, 'important');
+            placeholder.style.setProperty('width', `${Math.max(1, rect.width)}px`, 'important');
+            placeholder.style.setProperty('height', `${Math.max(1, rect.height)}px`, 'important');
+            placeholder.style.setProperty('min-width', `${Math.max(1, rect.width)}px`, 'important');
+            placeholder.style.setProperty('min-height', `${Math.max(1, rect.height)}px`, 'important');
+            placeholder.style.setProperty('margin', cs.margin, 'important');
+            placeholder.style.setProperty('padding', '0', 'important');
+            placeholder.style.setProperty('border', '0', 'important');
+            placeholder.style.setProperty('visibility', 'hidden', 'important');
+            placeholder.style.setProperty('pointer-events', 'none', 'important');
+            if (cs.flexGrow !== '0') placeholder.style.setProperty('flex-grow', cs.flexGrow, 'important');
+            if (cs.flexShrink !== '1') placeholder.style.setProperty('flex-shrink', cs.flexShrink, 'important');
+            if (cs.flexBasis !== 'auto') placeholder.style.setProperty('flex-basis', cs.flexBasis, 'important');
+            if (cs.gridColumn !== 'auto') placeholder.style.setProperty('grid-column', cs.gridColumn, 'important');
+            if (cs.gridRow !== 'auto') placeholder.style.setProperty('grid-row', cs.gridRow, 'important');
+            target.parentNode.insertBefore(placeholder, target);
+
+            state.webFullscreenParent = parent;
+            state.webFullscreenNextSibling = target.nextSibling;
+            state.webFullscreenPlaceholder = placeholder;
+            state.webFullscreenParentStyleBackup = parent.getAttribute('style');
+            const parentRect = parent.getBoundingClientRect();
+            parent.style.setProperty('min-width', `${Math.max(1, parentRect.width)}px`, 'important');
+            parent.style.setProperty('min-height', `${Math.max(1, parentRect.height)}px`, 'important');
+
+            document.body.appendChild(target);
+            state.webFullscreenReparented = true;
+            return true;
+        } catch (err) {
+            try { state.webFullscreenPlaceholder?.remove(); } catch {}
+            state.webFullscreenPlaceholder = null;
+            state.webFullscreenParent = null;
+            state.webFullscreenNextSibling = null;
+            state.webFullscreenParentStyleBackup = null;
+            state.webFullscreenReparented = false;
+            console.warn('[VFA] Reparent fullscreen failed:', err);
+            return false;
+        }
+    }
+
+    function vfaRestoreReparentFullscreen(target) {
+        if (!state.webFullscreenReparented || !target) return;
+        try {
+            const placeholder = state.webFullscreenPlaceholder;
+            const parent = state.webFullscreenParent;
+            const next = state.webFullscreenNextSibling;
+            const parentStyleBackup = state.webFullscreenParentStyleBackup;
+
+            // 关键顺序：先把播放器放回原 DOM 位置，保持网页全屏样式和尺寸不变，
+            // 再移除占位节点。这样站点的响应式布局不会在 iframe 还没回来时重新计算。
+            if (placeholder && placeholder.parentNode) {
+                placeholder.parentNode.insertBefore(target, placeholder);
+                placeholder.remove();
+            } else if (parent && parent.isConnected) {
+                if (next && next.parentNode === parent) parent.insertBefore(target, next);
+                else parent.appendChild(target);
+            }
+
+            // iframe 已经回到原播放器树里，再恢复父容器原来的 inline style。
+            if (parent && parent.isConnected) {
+                if (parentStyleBackup === null || parentStyleBackup === '') parent.removeAttribute('style');
+                else parent.setAttribute('style', parentStyleBackup);
+            }
+        } catch (err) {
+            console.warn('[VFA] Restore fullscreen target failed:', err);
+        }
+        state.webFullscreenReparented = false;
+        state.webFullscreenParent = null;
+        state.webFullscreenNextSibling = null;
+        state.webFullscreenPlaceholder = null;
+        state.webFullscreenParentStyleBackup = null;
+    }
+
+    async function exitWebFullscreen(showToast = true) {
+        if (state.webFullscreen === 'iframe-scale') {
+            const target = state.webFullscreenVideo;
+            if (state.webFullscreenResizeBound) { try { window.removeEventListener('resize', state.webFullscreenResizeBound); } catch {} }
+            if (state.webFullscreenViewportResize && window.visualViewport) { try { window.visualViewport.removeEventListener('resize', state.webFullscreenViewportResize); } catch {} }
+            state.webFullscreenResizeBound = null;
+            state.webFullscreenViewportResize = null;
+            if (target) {
+                target.classList.remove('vfa-web-fullscreen-iframe-scale');
+                if (state.webFullscreenStyleBackup === '') target.removeAttribute('style');
+                else if (state.webFullscreenStyleBackup !== null) target.setAttribute('style', state.webFullscreenStyleBackup);
+            }
+            state.webFullscreen = false;
+            state.webFullscreenVideo = null;
+            state.webFullscreenStyleBackup = null;
+            state.webFullscreenFrameRect = null;
+            if (showToast) toast('🖥️ 已退出网页全屏');
+            return;
+        }
+
+        // 兼容旧状态下残留的 Popover 网页全屏。当前网页全屏入口不会再使用 Popover。
+        if (state.webFullscreen === 'popover') {
+            const target = state.webFullscreenVideo;
+            try {
+                if (target?.matches?.(':popover-open')) target.hidePopover();
+            } catch {}
+            try { target?.classList.remove('vfa-web-fullscreen-popover'); } catch {}
+            try { target?.removeEventListener('toggle', vfaHandlePopoverToggle); } catch {}
+            state.webFullscreen = false;
+            state.webFullscreenVideo = null;
+            state.webFullscreenPopover = false;
+            if (showToast) toast('🖥️ 已退出网页全屏');
+            return;
+        }
+
+        // 原生 Fullscreen API 仅保留给其他内部调用的兜底逻辑。网页全屏按钮不会主动使用它。
+        if (state.webFullscreen === 'native') {
+            try {
+                if (document.fullscreenElement && document.exitFullscreen) {
+                    await document.exitFullscreen();
+                }
+            } catch {}
+            try { state.webFullscreenVideo?.classList.remove('vfa-web-fullscreen-native'); } catch {}
+            state.webFullscreen = false;
+            state.webFullscreenVideo = null;
+            state.webFullscreenNative = false;
+            state.webFullscreenPopover = false;
+            if (showToast) toast('🖥️ 已退出网页全屏');
+            return;
+        }
+
         // B站网页全屏由它自己的播放器状态机负责退出。
         if (state.webFullscreen === 'bilibili') {
             const leave = getBilibiliWebFullscreenLeaveButton();
@@ -2790,19 +3034,21 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         state.webFullscreenResizeBound = null;
 
         if (target) {
+            // 对被搬到 body 的 iframe，必须先放回原播放器 DOM，再恢复原始 style。
+            // 如果先恢复 style，iframe 会在 body 中立刻缩回原尺寸，站点会提前触发布局重排。
+            vfaRestoreReparentFullscreen(target);
             target.classList.remove('vfa-web-fullscreen-target');
             if (state.webFullscreenStyleBackup !== null) {
                 if (state.webFullscreenStyleBackup === '') target.removeAttribute('style');
                 else target.setAttribute('style', state.webFullscreenStyleBackup);
             }
         }
-        // 页面本身从未进入网页全屏，因此退出时只恢复播放器容器。
         state.webFullscreen = false;
         state.webFullscreenVideo = null;
         state.webFullscreenStyleBackup = null;
+        state.webFullscreenNative = false;
+        state.webFullscreenPopover = false;
 
-        // 连续两帧恢复布局，给站点自己的响应式播放器时间重新计算
-        // 视频比例、控制栏和进度条。
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
                 try {
@@ -2816,15 +3062,12 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         if (showToast) toast('🖥️ 已退出网页全屏');
     }
 
-    function toggleWebFullscreen() {
+    async function toggleWebFullscreen() {
         if (state.webFullscreen) {
-            exitWebFullscreen();
+            await exitWebFullscreen();
             return;
         }
 
-        // 在 B 站直接调用 B 站原生“网页全屏”按钮。
-        // 这样会进入它自己的 mode-webfullscreen，播放器、弹幕、控制栏和视频渲染层
-        // 都保持在原来的 DOM 结构中，不会出现把 video 脱离渲染树后黑屏的问题。
         const bilibiliButton = getBilibiliWebFullscreenButton();
         if (bilibiliButton) {
             try {
@@ -2837,42 +3080,85 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             }
         }
 
+        const mediaFrame = getVisibleMediaFrame();
         const v = getVideo();
-        const mediaFrame = v ? null : getVisibleMediaFrame();
-        if (!v && !mediaFrame) {
-            toast('⚠️ 没有找到可用的视频播放器');
+        let target = mediaFrame || null;
+        if (!target && v) target = getWebFullscreenTarget(v);
+
+        if (!target || target === document.body || target === document.documentElement) {
+            toast('⚠️ 当前页面没有找到可用的视频播放器');
             return;
         }
 
-        const target = v ? getWebFullscreenTarget(v) : mediaFrame;
-        if (!target || target === document.body || target === document.documentElement || target === v) {
-            toast('⚠️ 当前页面没有找到稳定的视频播放器容器');
+        /*
+         * 跨域 iframe 使用“保持原始渲染尺寸 + CSS 视觉缩放”的网页全屏。
+         * iframe 内部 viewport 不变，播放器不会因为全屏而重新初始化。
+         */
+        if (target.tagName === 'IFRAME') {
+            const rect = target.getBoundingClientRect();
+            if (!(rect.width > 0 && rect.height > 0)) {
+                toast('⚠️ 当前播放器尺寸无效，无法进入网页全屏');
+                return;
+            }
+            state.webFullscreenStyleBackup = target.getAttribute('style');
+            state.webFullscreenFrameRect = { width: rect.width, height: rect.height };
+            target.style.setProperty('--vfa-frame-width', `${rect.width}px`);
+            target.style.setProperty('--vfa-frame-height', `${rect.height}px`);
+            state.webFullscreenVideo = target;
+            state.webFullscreen = 'iframe-scale';
+            state.webFullscreenNative = false;
+            target.classList.add('vfa-web-fullscreen-iframe-scale');
+
+            const syncIframeScale = () => {
+                if (state.webFullscreen !== 'iframe-scale') return;
+                const r = state.webFullscreenFrameRect;
+                if (!r) return;
+                const vw = Math.max(1, window.innerWidth);
+                const vh = Math.max(1, window.innerHeight);
+                const scale = Math.max(vw / r.width, vh / r.height);
+                target.style.setProperty('--vfa-scale', String(scale));
+                target.style.setProperty('--vfa-left', `${(vw - r.width * scale) / 2}px`);
+                target.style.setProperty('--vfa-top', `${(vh - r.height * scale) / 2}px`);
+            };
+            syncIframeScale();
+            window.addEventListener('resize', syncIframeScale, { passive: true });
+            if (window.visualViewport) window.visualViewport.addEventListener('resize', syncIframeScale, { passive: true });
+            state.webFullscreenResizeBound = syncIframeScale;
+            state.webFullscreenViewportResize = syncIframeScale;
+            toast('🖥️ 已进入网页全屏');
             return;
         }
 
-        // 保存进入网页全屏前的 inline style。
-        // 退出时原样恢复，避免播放器被网站的旧固定尺寸卡在顶部。
+        /*
+         * 非 iframe 播放器才使用网页内 fixed 模式。
+         * 这种模式不会搬动 video 本身，只改变稳定播放器容器的定位。
+         */
+        const needReparent = vfaHasFixedContainingBlock(target);
         state.webFullscreenStyleBackup = target.getAttribute('style');
 
-        // 这里只处理播放器本身。
-        // 不给 html/body 加全屏 class，避免把整张网页的滚动和布局一起锁死。
+        if (needReparent) {
+            vfaPrepareReparentFullscreen(target);
+        }
+
         target.classList.add('vfa-web-fullscreen-target');
         state.webFullscreen = true;
         state.webFullscreenVideo = target;
+        state.webFullscreenNative = false;
 
         const syncWebFullscreenLayout = () => {
-            if (!state.webFullscreen) return;
+            if (!state.webFullscreen || state.webFullscreen === 'native') return;
             try {
                 window.dispatchEvent(new Event('resize'));
-                v?.dispatchEvent(new Event('resize'));
+                if (v) v.dispatchEvent(new Event('resize'));
             } catch {}
         };
 
-        // 进入后立即同步一次，随后等下一帧。
         syncWebFullscreenLayout();
-        requestAnimationFrame(syncWebFullscreenLayout);
+        requestAnimationFrame(() => {
+            syncWebFullscreenLayout();
+            requestAnimationFrame(syncWebFullscreenLayout);
+        });
 
-        // 浏览器窗口从小尺寸放大到最大时，重新通知播放器布局。
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', syncWebFullscreenLayout, { passive: true });
             state.webFullscreenViewportResize = syncWebFullscreenLayout;
@@ -2883,14 +3169,32 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         toast('🖥️ 已进入网页全屏');
     }
 
-    document.addEventListener('keydown', e => {
-        if (e.key === 'Escape' && state.webFullscreen) {
-            e.preventDefault();
-            exitWebFullscreen();
-        }
-    }, true);
+    const vfaHandleWebFullscreenEscape = e => {
+        if (e.key !== 'Escape' || !state.webFullscreen) return;
+        // Popover 的 Escape 由浏览器关闭，顶层页面不要拦截。
+        if (state.webFullscreen === 'popover' || state.webFullscreen === 'native') return;
+        e.preventDefault();
+        e.stopPropagation();
+        exitWebFullscreen();
+    };
+    window.addEventListener('keydown', vfaHandleWebFullscreenEscape, true);
+    document.addEventListener('keydown', vfaHandleWebFullscreenEscape, true);
     document.addEventListener('fullscreenchange', () => {
-        // 原生全屏退出时，不误关闭网页全屏状态。两者互相独立。
+        if (state.webFullscreen === 'native' && !document.fullscreenElement) {
+            const target = state.webFullscreenVideo;
+            try { target?.classList.remove('vfa-web-fullscreen-native'); } catch {}
+            state.webFullscreen = false;
+            state.webFullscreenVideo = null;
+            state.webFullscreenNative = false;
+            state.webFullscreenStyleBackup = null;
+            try {
+                window.dispatchEvent(new Event('resize'));
+                document.querySelectorAll('video').forEach(x => {
+                    try { x.dispatchEvent(new Event('resize')); } catch {}
+                });
+            } catch {}
+            toast('🖥️ 已退出网页全屏');
+        }
     });
     function toggleMute() {
         const v = getVideo();
@@ -4397,9 +4701,12 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             const sw = e.target.closest('.vfa-swrow');
             if (sw) {
                 const t = sw.dataset.t;
-                const on = !state[t];
-                state[t] = on;
-                store.set(t, on);
+                // 弹幕开关的 UI 名称是 danmaku，实际状态字段是 hideDanmaku。
+                // 这里统一映射，避免刷新后实际已屏蔽但开关显示关闭。
+                const stateKey = t === 'danmaku' ? 'hideDanmaku' : t;
+                const on = !state[stateKey];
+                state[stateKey] = on;
+                store.set(stateKey, on);
                 sw.querySelector('.vfa-switch').classList.toggle('on', on);
                 if (t === 'smooth') { setSmooth(on); toast(on ? '🚀 流畅模式已开启' : '🚀 流畅模式已关闭'); }
                 if (t === 'freezeDecor') { setFreeze(on); toast(on ? '🧊 装饰动画已冻结' : '🧊 装饰动画已恢复'); }
@@ -4860,7 +5167,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
     function refreshSwitches() {
         state.panel.querySelectorAll('.vfa-swrow').forEach(sw => {
-            sw.querySelector('.vfa-switch').classList.toggle('on', !!state[sw.dataset.t]);
+            const t = sw.dataset.t;
+            const stateKey = t === 'danmaku' ? 'hideDanmaku' : t;
+            sw.querySelector('.vfa-switch').classList.toggle('on', !!state[stateKey]);
         });
     }
 
