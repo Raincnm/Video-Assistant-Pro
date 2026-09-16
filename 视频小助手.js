@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.6
+// @version      2.4.7
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
@@ -28,8 +28,8 @@
     // GitHub 在线更新检测
     const VFA_UPDATE_URL = 'https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js';
     const VFA_CURRENT_VERSION =
-        typeof GM_info !== 'undefined' && GM_info.version
-            ? GM_info.version
+        typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version
+            ? GM_info.script.version
             : '2.4.1';
     let vfaUpdateInfo = { available: false, version: '', checking: false };
 
@@ -77,6 +77,7 @@
                     const m = String(response.responseText || '').match(/@version\s+([^\s]+)/);
                     const remote = m ? m[1].trim() : '';
                     if (!remote) return;
+                    console.debug('[VFA] 更新检查:', { current: VFA_CURRENT_VERSION, remote });
                     if (vfaCompareVersions(remote, VFA_CURRENT_VERSION) > 0) {
                         vfaUpdateInfo = { available: true, version: remote, checking: false };
                         vfaSetUpdateBadge(remote);
