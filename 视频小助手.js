@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.3
+// @version      2.4.4
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
@@ -299,9 +299,12 @@
     display:none;
     align-items:center;
     justify-content:center;
-    max-width:118px;
+    width:max-content;
+    max-width:none;
     min-height:0;
-    padding:6px;
+    height:auto;
+    box-sizing:content-box !important;
+    padding:7px !important;
     margin-left:auto;
     border:1px solid rgba(255, 184, 77, .38);
     border-radius:999px;
@@ -997,11 +1000,10 @@ html[vfa-smooth] #vfa-fab, html[vfa-smooth] #vfa-panel { backdrop-filter:none !i
 
 /* 左边标题允许收缩 */
 #vfa-panel .vfa-panel-head .vfa-title {
-    min-width:0;
-    flex:1 1 auto;
-
-    overflow:hidden;
-    text-overflow:ellipsis;
+    min-width:max-content;
+    flex:0 1 auto;
+    overflow:visible;
+    text-overflow:clip;
     white-space:nowrap;
 }
 
