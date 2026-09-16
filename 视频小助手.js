@@ -2,7 +2,7 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.2
+// @version      2.4.3
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @author       You
 // @match        *://*/*
@@ -11,11 +11,11 @@
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
+// @updateURL    https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
+// @downloadURL  https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // @connect      raw.githubusercontent.com
 // @run-at       document-idle
 // @icon         https://img.001315.xyz/file/tg/1789381092104.webp
-// @downloadURL  https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
-// @updateURL    https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // ==/UserScript==
 
 (function () {
@@ -300,8 +300,8 @@
     align-items:center;
     justify-content:center;
     max-width:118px;
-    min-height:24px;
-    padding:0 9px;
+    min-height:0;
+    padding:6px;
     margin-left:auto;
     border:1px solid rgba(255, 184, 77, .38);
     border-radius:999px;
@@ -309,6 +309,7 @@
     color:#ffd28a;
     font-size:11px;
     font-weight:700;
+    line-height:1.2;
     white-space:nowrap;
     cursor:pointer;
     user-select:none;
@@ -1750,7 +1751,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 }
 
 #vfa-panel > .vfa-volume-row {
-    min-height:24px;
+    min-height:0;
 }
 
 #vfa-panel > .vfa-feature-note {
