@@ -2,10 +2,11 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.8
+// @version      2.4.9
 // @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
-// @author       You
+// @license      MIT
 // @match        *://*/*
+// @include      *
 // @exclude      *://localhost*
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -14,7 +15,7 @@
 // @updateURL    https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // @downloadURL  https://raw.githubusercontent.com/Raincnm/Video-Assistant-Pro/main/%E8%A7%86%E9%A2%91%E5%B0%8F%E5%8A%A9%E6%89%8B.js
 // @connect      raw.githubusercontent.com
-// @run-at       document-idle
+// @run-at       document-start
 // @icon         https://img.001315.xyz/file/tg/1789381092104.webp
 // ==/UserScript==
 
@@ -30,7 +31,7 @@
     const VFA_CURRENT_VERSION =
         typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version
             ? GM_info.script.version
-            : '2.4.1';
+            : '2.4.7';
     let vfaUpdateInfo = { available: false, version: '', checking: false };
 
     function vfaCompareVersions(a, b) {
@@ -114,9 +115,11 @@
     }
 
     function vfaBroadcastToFrames(type, data = {}) {
-        if (!VFA_IS_TOP) return;
+        // 顶层页面和 iframe 都允许继续向自己的子 iframe 转发。
+        // 之前这里限制了 VFA_IS_TOP，导致“顶层 → iframe → iframe”的第二层转发直接中断。
+        // Gimy 这类播放页可能存在多层播放器嵌套，因此必须让每一层都能继续向下传递。
         const message = { source: 'vfa-pro', type, ...data };
-        document.querySelectorAll('iframe').forEach(frame => {
+        document.querySelectorAll('iframe,frame').forEach(frame => {
             try { frame.contentWindow?.postMessage(message, '*'); } catch { }
         });
     }
@@ -157,6 +160,18 @@
                 if (state) vfaBroadcastToFrames('skip-settings', { skipIntro: state.skipIntro, skipOutro: state.skipOutro, skipIntroSec: state.skipIntroSec, skipOutroSec: state.skipOutroSec });
                 return;
             }
+            if (d.type === 'next-episode-request') {
+                const next = findNextEpisodeControl();
+                if (next) {
+                    try {
+                        next.click();
+                        if (state) toast('⏭ 片尾到达，正在播放下一集');
+                    } catch { }
+                } else if (state) {
+                    toast('⏸ 已到片尾，未找到下一集，视频已暂停');
+                }
+                return;
+            }
             if (d.type === 'video-state') {
                 vfaRemoteVideoState = d;
                 updateVideoTimeline();
@@ -193,6 +208,26 @@
                     if (Number.isFinite(Number(d.skipOutroSec))) state.skipOutroSec = Number(d.skipOutroSec);
                     state.skipIntroApplied = false;
                     state.skipOutroTriggered = false;
+                    return;
+                }
+                if (d.type === 'shortcut-action') {
+                    if (!state.shortcutEnabled) return;
+                    // 键盘事件发生在子 iframe 时，优先把“片头/片尾定位当前时间”
+                    // 送回顶层页面，让顶层直接执行主弹窗中的同一个按钮。
+                    // 这样快捷键与鼠标点击 #vfa-intro-set / #vfa-outro-set 100% 共用入口，
+                    // 不再要求子 iframe 自己找到主弹窗按钮。
+                    if (d.fromKeyboard && !VFA_IS_TOP) {
+                        vfaSendToParent('shortcut-action', { action: d.action, fromKeyboard: true });
+                        return;
+                    }
+                    // 当前 iframe 可能只是播放器的中间壳层，真实 video 还在更深层 iframe。
+                    // 有本地 video 就直接执行；没有 video 就继续向下转发，支持多层/嵌套 iframe。
+                    const localVideo = getVideo();
+                    if (localVideo) {
+                        try { vfaShortcutAction(d.action); } catch (err) { console.warn('[VFA] iframe 快捷键执行失败:', d.action, err); }
+                    } else {
+                        vfaBroadcastToFrames('shortcut-action', { action: d.action });
+                    }
                     return;
                 }
                 const v = getVideo();
@@ -243,6 +278,7 @@
 
     const state = {
         speed: store.get('speed', 1),
+        speedStep: store.get('speedStep', 0.25),
         rememberSpeed: store.get('rememberSpeed', true),
         watermarkOpacity: store.get('watermarkOpacity', 0.05),
         developerUnlocked: false,
@@ -284,6 +320,8 @@
         abA: null,
         abB: null,
         abLoop: false,
+        shortcutEnabled: store.get('shortcutEnabled', true),
+        shortcuts: store.get('shortcuts', null),
         webFullscreen: false,
         webFullscreenVideo: null,
         webFullscreenStyleBackup: null,
@@ -435,6 +473,43 @@
 #vfa-panel #vfa-speed {
     text-shadow:
         0 1px 2px rgba(0, 0, 0, .28);
+}
+
+#vfa-panel .vfa-speed-value {
+    appearance:none !important;
+    -webkit-appearance:none !important;
+    box-sizing:border-box !important;
+    border:1px solid rgba(255,255,255,.30) !important;
+    background:rgba(0,0,0,.18) !important;
+    color:#ffffff !important;
+    font:inherit !important;
+    font-weight:700 !important;
+    min-width:72px !important;
+    padding:7px 12px !important;
+    border-radius:12px !important;
+    cursor:pointer !important;
+    text-align:center !important;
+    text-shadow:0 1px 2px rgba(0,0,0,.28) !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 4px 12px rgba(0,0,0,.08) !important;
+}
+#vfa-panel .vfa-speed-value:hover {
+    background:rgba(255,255,255,.12) !important;
+    border-color:rgba(255,255,255,.40) !important;
+}
+#vfa-panel .vfa-speed-step-row {
+    width:100% !important;
+    align-items:center !important;
+    justify-content:center !important;
+    margin-top:4px !important;
+}
+#vfa-panel .vfa-speed-step-btn {
+    flex:1 1 0 !important;
+    width:100% !important;
+    min-width:0 !important;
+    box-sizing:border-box !important;
+    padding-left:12px !important;
+    padding-right:12px !important;
+    text-align:center !important;
 }
 
 /* 按钮文字 */
@@ -1425,7 +1500,7 @@ html[vfa-smooth] #vfa-fab, html[vfa-smooth] #vfa-panel { backdrop-filter:none !i
     backdrop-filter:blur(24px) saturate(180%); -webkit-backdrop-filter:blur(24px) saturate(180%);
     border:1px solid rgba(255,255,255,.45);
     box-shadow:0 8px 30px rgba(31,38,135,.3), inset 0 1px 0 rgba(255,255,255,.5);
-    color:#fff; font-size:13px; font-weight:600; pointer-events:none;
+    color:#63c7ff; font-size:13px; font-weight:600; pointer-events:none;
     opacity:0; transition:all .35s cubic-bezier(.2,.9,.3,1.3);
 }
 #vfa-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
@@ -1923,6 +1998,95 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
 
 
+/* ===== 快捷键设置 ===== */
+#vfa-shortcut-entry { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+/* 只把“⌨️ 快捷键”标题下面这一栏视觉上上移，直接缩短两者间距 */
+#vfa-panel .vfa-lower-section > .vfa-label:has(+ #vfa-shortcut-entry) {
+    margin-bottom:0 !important;
+}
+#vfa-panel .vfa-lower-section > #vfa-shortcut-entry {
+    /* 这里才是实际的父子层级：快捷键标题和设置栏都在 .vfa-lower-section 内 */
+    margin-top:-15px !important;
+    margin-bottom:0 !important;
+    transform:none !important;
+}
+#vfa-panel .vfa-shortcut-summary { font-size:10px; opacity:.52; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#vfa-shortcut-open {
+    /* 与上方“画中画”按钮保持同宽：三按钮行的单按钮宽度 */
+    width:calc((100% - 24px) / 3) !important;
+    flex:none !important;
+    box-sizing:border-box !important;
+    height:38px !important;
+    min-height:38px !important;
+    padding:9px !important;
+    line-height:18px !important;
+    display:inline-flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    white-space:nowrap !important;
+}
+
+/* 快捷键界面的按键符号完整显示，避免箭头、⌫、⌘ 等被裁切或省略。 */
+#vfa-shortcut-card,
+#vfa-shortcut-card button,
+#vfa-shortcut-card input,
+#vfa-shortcut-card label {
+    font-family:system-ui,-apple-system,"Segoe UI","Noto Sans Symbols 2","Noto Sans Symbols","Arial Unicode MS",sans-serif !important;
+}
+.vfa-shortcut-key {
+    min-width:76px !important;
+    max-width:none !important;
+    width:auto !important;
+    min-height:30px !important;
+    height:auto !important;
+    padding:6px 10px !important;
+    line-height:18px !important;
+    display:inline-flex !important;
+    align-items:center !important;
+    justify-content:center !important;
+    white-space:nowrap !important;
+    overflow:visible !important;
+    text-overflow:clip !important;
+    box-sizing:border-box !important;
+}
+.vfa-shortcut-edit,
+.vfa-shortcut-clear {
+    white-space:nowrap !important;
+    overflow:visible !important;
+    text-overflow:clip !important;
+    box-sizing:border-box !important;
+}
+#vfa-shortcut-modal { position:fixed; top:0; right:0; bottom:0; left:0; width:100vw; height:100vh; min-height:100dvh; z-index:2147483647; display:none; pointer-events:auto; align-items:center; justify-content:center; padding:14px; box-sizing:border-box; overflow:hidden; isolation:isolate; }
+#vfa-shortcut-modal.show { display:flex; }
+#vfa-shortcut-modal::before { content:""; position:absolute; top:0; right:0; bottom:0; left:0; width:100%; height:100%; background:rgba(0,0,0,.42); backdrop-filter:blur(7px); -webkit-backdrop-filter:blur(7px); }
+#vfa-shortcut-card { position:relative; width:min(520px,calc(100vw - 28px)); max-height:min(720px,calc(100vh - 28px)); overflow:hidden; display:flex; flex-direction:column; box-sizing:border-box; border:1px solid rgba(255,255,255,.18); border-radius:20px; background:rgba(20,27,42,.92); color:#fff; box-shadow:0 24px 80px rgba(0,0,0,.48); }
+#vfa-shortcut-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px 12px; border-bottom:1px solid rgba(255,255,255,.1); }
+#vfa-shortcut-head strong { font-size:15px; }
+#vfa-shortcut-head small { display:block; margin-top:3px; font-size:10px; opacity:.5; font-weight:400; }
+#vfa-shortcut-list { padding:8px 14px; overflow:auto; -webkit-overflow-scrolling:touch; scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
+#vfa-shortcut-list::-webkit-scrollbar { width:6px; height:6px; }
+#vfa-shortcut-list::-webkit-scrollbar-track { background:transparent; }
+#vfa-shortcut-list::-webkit-scrollbar-thumb { background:linear-gradient(180deg,rgba(255,255,255,.34),rgba(255,255,255,.18)); border:1px solid rgba(255,255,255,.12); border-radius:999px; }
+#vfa-shortcut-list::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.46); }
+#vfa-shortcut-list::-webkit-scrollbar-corner { background:transparent; }
+.vfa-shortcut-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; align-items:center; gap:6px; padding:9px 4px; border-bottom:1px solid rgba(255,255,255,.06); }
+.vfa-shortcut-name { min-width:0; font-size:12px; }
+.vfa-shortcut-key { min-width:76px; max-width:180px; padding:6px 9px; border-radius:9px; border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.07); color:#fff; text-align:center; font:600 11px/1.2 inherit; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vfa-shortcut-key.unset { opacity:.45; }
+.vfa-shortcut-edit, .vfa-shortcut-clear { min-width:50px; padding:6px 8px; border-radius:9px; border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.08); color:#fff; cursor:pointer; font:600 10px/1.2 inherit; }
+.vfa-shortcut-edit:hover, .vfa-shortcut-clear:hover { background:rgba(255,255,255,.16); }
+.vfa-shortcut-edit.listening { background:rgba(59,130,246,.35); border-color:rgba(96,165,250,.7); }
+#vfa-shortcut-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 14px 14px; border-top:1px solid rgba(255,255,255,.1); }
+#vfa-shortcut-foot .vfa-shortcut-status { flex:1; min-width:0; font-size:10px; opacity:.55; line-height:1.35; }
+#vfa-shortcut-foot button { padding:7px 11px; border-radius:10px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.08); color:#fff; cursor:pointer; font:600 11px/1.2 inherit; }
+#vfa-shortcut-foot button:hover { background:rgba(255,255,255,.16); }
+@media (max-width:600px) {
+    #vfa-shortcut-card { width:calc(100vw - 20px); max-height:calc(100vh - 20px); border-radius:16px; }
+    .vfa-shortcut-row { grid-template-columns:minmax(0,1fr) auto auto auto; gap:4px; }
+    .vfa-shortcut-key { min-width:62px; }
+    .vfa-shortcut-edit, .vfa-shortcut-clear { min-width:44px; padding:6px 5px; }
+}
+
 /* ===== 手机端弹窗自适应：按屏幕宽高对整个面板进行视觉缩放 ===== */
 @media (max-width:600px) {
     #vfa-panel {
@@ -2095,9 +2259,31 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
 
     /* ---------------- 工具 ---------------- */
+    function vfaGetToastHost() {
+        const fs = document.fullscreenElement;
+        if (!fs) return document.body;
+        // 全屏元素本身若是普通容器，Toast 放进它的子树即可进入同一个全屏层。
+        // <video> 是替换元素，内部不能可靠渲染 DOM 子元素，因此优先使用其全屏祖先容器。
+        if (fs.tagName !== 'VIDEO') return fs;
+        let p = fs.parentElement;
+        while (p && p !== document.documentElement) {
+            if (p.contains(fs)) return p;
+            p = p.parentElement;
+        }
+        return document.body;
+    }
+
+    function vfaMoveToastToFullscreenHost() {
+        const el = document.getElementById('vfa-toast');
+        if (!el) return;
+        const host = vfaGetToastHost();
+        if (host && el.parentElement !== host) host.appendChild(el);
+    }
+
     function toast(msg) {
         let el = document.getElementById('vfa-toast');
         if (!el) { el = document.createElement('div'); el.id = 'vfa-toast'; document.body.appendChild(el); }
+        vfaMoveToastToFullscreenHost();
         el.textContent = msg;
         el.classList.add('show');
         clearTimeout(el._t);
@@ -2586,6 +2772,35 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             const el = document.getElementById('vfa-speed');
             if (el) el.textContent = (+v.toFixed(2)) + 'x';
         }
+    }
+
+    // 点击当前倍速数字，可直接输入自定义倍速；步进值也可独立设置并持久保存。
+    function vfaEditSpeed() {
+        const current = Number(state.speed) || 1;
+        const raw = prompt(`请输入倍速（0.25～16），当前：${current}x`, String(+current.toFixed(2)));
+        if (raw === null) return;
+        const v = Number(String(raw).trim());
+        if (!Number.isFinite(v) || v < 0.25 || v > 16) {
+            toast('⚠️ 倍速范围：0.25x～16x');
+            return;
+        }
+        setSpeed(v);
+    }
+
+    function vfaEditSpeedStep() {
+        const current = Number(state.speedStep) || 0.25;
+        const raw = prompt(`请输入倍速步进值（0.01～4），当前：${current}x`, String(+current.toFixed(2)));
+        if (raw === null) return;
+        const step = Number(String(raw).trim());
+        if (!Number.isFinite(step) || step < 0.01 || step > 4) {
+            toast('⚠️ 步进范围：0.01x～4x');
+            return;
+        }
+        state.speedStep = Math.round(step * 100) / 100;
+        store.set('speedStep', state.speedStep);
+        const el = document.getElementById('vfa-speed-step');
+        if (el) el.textContent = `步进 ${+state.speedStep.toFixed(2)}x · 点击调整`;
+        toast(`⚙️ 倍速步进 ${+state.speedStep.toFixed(2)}x`);
     }
     const nudge = s => {
         const v = getVideo();
@@ -3181,6 +3396,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     window.addEventListener('keydown', vfaHandleWebFullscreenEscape, true);
     document.addEventListener('keydown', vfaHandleWebFullscreenEscape, true);
     document.addEventListener('fullscreenchange', () => {
+        vfaMoveToastToFullscreenHost();
         if (state.webFullscreen === 'native' && !document.fullscreenElement) {
             const target = state.webFullscreenVideo;
             try { target?.classList.remove('vfa-web-fullscreen-native'); } catch {}
@@ -3844,12 +4060,27 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     function goNextEpisodeOrPause(v) {
         if (!v || state.skipOutroTriggered) return;
         state.skipOutroTriggered = true;
+
+        // 播放器通常位于 Gimy 的 iframe 中，而“下一集”按钮在最外层播放页。
+        // 子 iframe 无法直接访问父页面的 DOM，因此必须把“请求下一集”
+        // 传回顶层，由顶层真正点击网页上的“下一集”按钮。
+        if (!VFA_IS_TOP) {
+            try {
+                vfaSendToParent('next-episode-request', { fromSkipOutro: true });
+                toast('⏭ 片尾到达，正在切换下一集');
+            } catch {
+                try { v.pause(); } catch { }
+            }
+            return;
+        }
+
         const next = findNextEpisodeControl();
         if (!next) {
             try { v.pause(); } catch { }
             toast('⏸ 已到片尾，未找到下一集，视频已暂停');
             return;
         }
+
         toast('⏭ 片尾到达，正在播放下一集');
         try {
             next.click();
@@ -4473,6 +4704,361 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         fab.addEventListener('pointercancel', up);
     }
 
+    /* ---------------- 快捷键系统 ---------------- */
+    // 这里统一接管原脚本已有快捷键，不重复创建第二套播放控制逻辑。
+    // 默认映射保持原行为：Z/X/C 倍速、←/→ 快退快进、Space 播放暂停、M 静音、P 画中画、Alt+V 面板。
+    const VFA_SHORTCUT_DEFAULTS = {
+        panelToggle:  { label: '⚙️ 打开 / 关闭面板', key: 'Alt+V' },
+        playPause:    { label: '▶️ 播放 / 暂停', key: 'Space' },
+        seekBack:     { label: '⏪ 后退 5 秒', key: 'ArrowLeft' },
+        seekBackLong:{ label: '⏮️ 后退 30 秒', key: 'Shift+ArrowLeft' },
+        seekForward:  { label: '⏩ 前进 5 秒', key: 'ArrowRight' },
+        seekForwardLong:{ label: '⏭️ 前进 30 秒', key: 'Shift+ArrowRight' },
+        speedDown:    { label: '🐢 降低倍速（按自定义步进）', key: 'Z' },
+        speedReset:   { label: '🔄 恢复默认倍速 1x', key: 'X' },
+        speedUp:      { label: '🚀 提高倍速（按自定义步进）', key: 'C' },
+        mute:         { label: '🔇 静音 / 解除静音', key: 'M' },
+        pip:          { label: '📺 画中画', key: 'P' },
+        fullscreen:   { label: '⛶️ 视频 / 浏览器全屏', key: '' },
+        webFullscreen:{ label: '🖥️ 网页全屏', key: '' },
+        mirror:       { label: '🪞 镜像', key: '' },
+        rotate:       { label: '🔄 旋转 90°', key: '' },
+        abA:          { label: '🅰️ 设置 A 点', key: '' },
+        abB:          { label: '🅱️ 设置 B 点', key: '' },
+        abLoop:       { label: '🔁 A-B 循环开关', key: '' },
+        abReset:      { label: '🧹 清除 A-B', key: '' },
+        danmaku:      { label: '🚫 屏蔽弹幕', key: '' },
+        smooth:       { label: '⚡ 一键流畅模式', key: '' },
+        skipIntro:    { label: '⏩ 跳过片头开关', key: '' },
+        skipOutro:    { label: '⏭️ 跳过片尾开关', key: '' },
+        skipIntroSet: { label: '🎬 片头定位到当前时间', key: 'Ctrl+Alt+I' },
+        skipOutroSet: { label: '🎬 片尾定位到当前时间', key: 'Ctrl+Alt+O' },
+        progress0:    { label: '⏩ 跳转到 0%', key: '0' },
+        progress10:   { label: '⏩ 跳转到 10%', key: '1' },
+        progress20:   { label: '⏩ 跳转到 20%', key: '2' },
+        progress30:   { label: '⏩ 跳转到 30%', key: '3' },
+        progress40:   { label: '⏩ 跳转到 40%', key: '4' },
+        progress50:   { label: '⏩ 跳转到 50%', key: '5' },
+        progress60:   { label: '⏩ 跳转到 60%', key: '6' },
+        progress70:   { label: '⏩ 跳转到 70%', key: '7' },
+        progress80:   { label: '⏩ 跳转到 80%', key: '8' },
+        progress90:   { label: '⏩ 跳转到 90%', key: '9' }
+    };
+    function vfaNormalizeShortcutKey(key) {
+        if (!key) return '';
+        const parts = String(key).split('+').map(x => x.trim()).filter(Boolean), mods = [];
+        let main = '';
+        for (const part of parts) {
+            const p = part.toLowerCase();
+            if (p === 'ctrl' || p === 'control') mods.push('Ctrl');
+            else if (p === 'alt') mods.push('Alt');
+            else if (p === 'shift') mods.push('Shift');
+            else if (p === 'meta' || p === 'cmd' || p === 'command') mods.push('Meta');
+            else main = part;
+        }
+        if (!main) return '';
+        const aliases = { ' ': 'Space', spacebar: 'Space', esc: 'Escape', left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown' };
+        main = aliases[main.toLowerCase()] || main;
+        if (main.length === 1 && /[a-z]/i.test(main)) main = main.toUpperCase();
+        return [...new Set(mods), main].join('+');
+    }
+    function vfaEventToShortcut(e) {
+        // 优先使用 e.key；部分视频网站/输入法环境会把 e.key 变成 Process、Unidentified 等，
+        // 此时使用 e.code 作为稳定的物理按键回退，提升不同键盘布局和播放器的兼容性。
+        const codeMap = {
+            Space: 'Space', Escape: 'Escape', Backspace: 'Backspace', Delete: 'Delete', Enter: 'Enter', Tab: 'Tab',
+            ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight', ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown',
+            Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Insert: 'Insert',
+            Numpad0: '0', Numpad1: '1', Numpad2: '2', Numpad3: '3', Numpad4: '4',
+            Numpad5: '5', Numpad6: '6', Numpad7: '7', Numpad8: '8', Numpad9: '9'
+        };
+        let key = e.key;
+        if (key === ' ') key = 'Space';
+        if (key === 'Esc') key = 'Escape';
+        if (!key || key === 'Process' || key === 'Unidentified' || ['Control','Alt','Shift','Meta'].includes(key)) {
+            key = codeMap[e.code] || (e.code && /^Key[A-Z]$/.test(e.code) ? e.code.slice(3) : '') || (e.code && /^Digit[0-9]$/.test(e.code) ? e.code.slice(5) : '');
+        }
+        if (!key || ['Control','Alt','Shift','Meta'].includes(key)) return '';
+        if (key.length === 1 && /[a-z]/i.test(key)) key = key.toUpperCase();
+        const mods = [];
+        if (e.ctrlKey) mods.push('Ctrl');
+        if (e.altKey) mods.push('Alt');
+        if (e.shiftKey) mods.push('Shift');
+        if (e.metaKey) mods.push('Meta');
+        return [...mods, key].join('+');
+    }
+    function vfaShortcutDisplay(key) {
+        if (!key) return '未设置';
+        const displayMap = {
+            Space: '空格',
+            ArrowLeft: '←',
+            ArrowRight: '→',
+            ArrowUp: '↑',
+            ArrowDown: '↓',
+            Escape: 'Esc',
+            Backspace: '⌫',
+            Delete: 'Delete',
+            Enter: 'Enter',
+            Tab: 'Tab',
+            Home: 'Home',
+            End: 'End',
+            PageUp: 'PageUp',
+            PageDown: 'PageDown',
+            Insert: 'Insert'
+        };
+        return String(key)
+            .split('+')
+            .map(part => displayMap[part] || (part === 'Meta' ? '⌘' : part))
+            .join(' + ');
+    }
+    function vfaShortcutCloneDefaults() {
+        const map = {};
+        Object.keys(VFA_SHORTCUT_DEFAULTS).forEach(action => {
+            map[action] = VFA_SHORTCUT_DEFAULTS[action].key || '';
+        });
+        return map;
+    }
+    function vfaGetShortcuts() {
+        const saved = state.shortcuts && typeof state.shortcuts === 'object' ? state.shortcuts : {};
+        return { ...vfaShortcutCloneDefaults(), ...saved };
+    }
+    function vfaSaveShortcuts(map) {
+        state.shortcuts = { ...map };
+        store.set('shortcuts', state.shortcuts);
+    }
+    function vfaAdjustVolume(delta) {
+        const v = getVideo();
+        if (v) {
+            v.volume = Math.min(1, Math.max(0, Number(v.volume) + delta));
+            if (v.volume > 0 && v.muted) v.muted = false;
+            state.volume = v.volume; state.muted = !!v.muted;
+            if (state.rememberVolume) { store.set('volume', state.volume); store.set('muted', state.muted); }
+            const range = document.getElementById('vfa-volume-range'), out = document.getElementById('vfa-volume-value');
+            if (range) { range.value = String(Math.round(v.volume * 100)); range.style.setProperty('--vfa-volume', Math.round(v.volume * 100) + '%'); }
+            if (out) out.textContent = Math.round(v.volume * 100) + '%';
+            toast(`🔊 音量 ${Math.round(v.volume * 100)}%`);
+        } else if (VFA_IS_TOP && vfaRemoteVideoState) {
+            const volume = Math.min(1, Math.max(0, Number(vfaRemoteVideoState.volume ?? 1) + delta));
+            try { vfaBroadcastToFrames('set-volume', { volume }); } catch {}
+            toast(`🔊 音量 ${Math.round(volume * 100)}%`);
+        }
+    }
+    function vfaToggleShortcutSwitch(t) {
+        const stateKey = t === 'danmaku' ? 'hideDanmaku' : t;
+        const on = !state[stateKey];
+        state[stateKey] = on; store.set(stateKey, on);
+        if (t === 'smooth') setSmooth(on);
+        else if (t === 'danmaku') setDanmaku(on);
+        else if (t === 'skipIntro') { syncSkipControls(getVideo(), true); if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro:on, skipOutro:state.skipOutro, skipIntroSec:state.skipIntroSec, skipOutroSec:state.skipOutroSec }); }
+        else if (t === 'skipOutro') { syncSkipControls(getVideo(), true); if (VFA_IS_TOP) vfaBroadcastToFrames('skip-settings', { skipIntro:state.skipIntro, skipOutro:on, skipIntroSec:state.skipIntroSec, skipOutroSec:state.skipOutroSec }); }
+        refreshSwitches();
+        const labels = { danmaku:on?'🚫 弹幕已屏蔽':'💬 弹幕已恢复', smooth:on?'🚀 流畅模式已开启':'🚀 流畅模式已关闭', skipIntro:on?`⏭ 跳过片头 ${formatTime(state.skipIntroSec)}`:'⏭ 跳过片头已关', skipOutro:on?`⏭ 片尾从 ${formatTime(state.skipOutroSec)} 自动下一集`:'⏭ 跳过片尾已关' };
+        toast(labels[t] || (on ? '已开启' : '已关闭'));
+    }
+    function vfaShortcutAction(action) {
+        if (action === 'panelToggle') return state.open ? closePanel() : openPanel();
+        if (action === 'playPause') return togglePlay();
+        if (action === 'seekBack') return nudge(-5);
+        if (action === 'seekBackLong') return nudge(-30);
+        if (action === 'seekForward') return nudge(5);
+        if (action === 'seekForwardLong') return nudge(30);
+        if (action === 'speedDown') { const v = getVideo(); if (v) return setSpeed(v.playbackRate - (state.speedStep || 0.25)); return; }
+        if (action === 'speedReset') return setSpeed(1);
+        if (action === 'speedUp') { const v = getVideo(); if (v) return setSpeed(v.playbackRate + (state.speedStep || 0.25)); return; }
+        if (action === 'mute') { const v = getVideo(); if (v) { v.muted = !v.muted; state.muted = !!v.muted; store.set('muted', state.muted); toast(v.muted ? '🔇 静音' : '🔊 有声'); } return; }
+        if (action === 'pip') return togglePip();
+        if (action === 'fullscreen') return toggleFullscreen();
+        if (action === 'webFullscreen') return toggleWebFullscreen();
+        if (action === 'mirror') return toggleMirror();
+        if (action === 'rotate') return rotate();
+        if (action === 'abA') return setAbPoint('A');
+        if (action === 'abB') return setAbPoint('B');
+        if (action === 'abLoop') return toggleAbLoop();
+        if (action === 'abReset') return resetAbLoop();
+        // 片头/片尾“定位当前时间”快捷键与主弹窗中的同名按钮共用同一入口。
+        // 优先触发主弹窗按钮，确保快捷键与鼠标点击的功能、提示和状态更新完全一致；
+        // 按钮不存在时再直接调用原定位函数，兼容 iframe/特殊页面环境。
+        if (action === 'skipIntroSet') {
+            const btn = document.getElementById('vfa-intro-set');
+            if (btn) return btn.click();
+            return setSkipIntroToCurrentTime();
+        }
+        if (action === 'skipOutroSet') {
+            const btn = document.getElementById('vfa-outro-set');
+            if (btn) return btn.click();
+            return setSkipOutroToCurrentTime();
+        }
+        if (['danmaku','smooth','skipIntro','skipOutro'].includes(action)) return vfaToggleShortcutSwitch(action);
+        const progress = /^progress(\d+)$/.exec(action);
+        if (progress) {
+            const percent = Number(progress[1]);
+            const v = getVideo();
+            if (v && Number.isFinite(v.duration) && v.duration > 0) {
+                v.currentTime = v.duration * percent / 100;
+                toast(`⏱ ${percent}%`);
+            }
+        }
+    }
+    function vfaInitShortcutUI() {
+        const modal = document.getElementById('vfa-shortcut-modal'), list = document.getElementById('vfa-shortcut-list'), enabled = document.getElementById('vfa-shortcut-enabled');
+        if (!modal || !list || !enabled || modal.dataset.vfaReady === '1') return;
+        modal.dataset.vfaReady = '1';
+        let listeningAction = null, listeningButton = null;
+        const status = msg => { const el = document.getElementById('vfa-shortcut-status'); if (el) el.textContent = msg; };
+        const stopListening = () => { if (listeningButton) listeningButton.classList.remove('listening'); listeningAction = null; listeningButton = null; };
+        const render = () => {
+            const map = vfaGetShortcuts();
+            list.innerHTML = Object.entries(VFA_SHORTCUT_DEFAULTS).map(([action,item]) => `<div class="vfa-shortcut-row" data-shortcut-action="${action}"><span class="vfa-shortcut-name">${item.label}</span><button type="button" class="vfa-shortcut-key ${map[action]?'':'unset'}" data-shortcut-key>${vfaShortcutDisplay(map[action])}</button><button type="button" class="vfa-shortcut-edit" data-shortcut-edit>设置</button><button type="button" class="vfa-shortcut-clear" data-shortcut-clear>清除</button></div>`).join('');
+            enabled.checked = !!state.shortcutEnabled;
+        };
+        list.addEventListener('click', e => {
+            const row = e.target.closest('.vfa-shortcut-row'); if (!row) return;
+            const action = row.dataset.shortcutAction;
+            if (e.target.closest('[data-shortcut-edit],[data-shortcut-key]')) {
+                stopListening(); listeningAction = action; listeningButton = row.querySelector('[data-shortcut-edit]'); listeningButton.classList.add('listening'); status(`正在设置「${VFA_SHORTCUT_DEFAULTS[action].label}」，请按下组合键…`);
+            } else if (e.target.closest('[data-shortcut-clear]')) {
+                const map = vfaGetShortcuts(); map[action] = ''; vfaSaveShortcuts(map); render(); status('已清除该功能的快捷键。');
+            }
+            e.stopPropagation();
+        });
+        document.addEventListener('keydown', e => {
+            if (!listeningAction || !modal.classList.contains('show')) return;
+            e.preventDefault(); e.stopPropagation();
+            const key = vfaEventToShortcut(e); if (!key) return;
+            const map = vfaGetShortcuts();
+            const conflict = Object.entries(map).find(([a,k]) => a !== listeningAction && k && vfaNormalizeShortcutKey(k) === vfaNormalizeShortcutKey(key));
+            if (conflict) { status(`快捷键 ${vfaShortcutDisplay(key)} 已分配给「${VFA_SHORTCUT_DEFAULTS[conflict[0]].label}」。`); return; }
+            map[listeningAction] = vfaNormalizeShortcutKey(key); vfaSaveShortcuts(map); status(`已设置「${VFA_SHORTCUT_DEFAULTS[listeningAction].label}」为 ${vfaShortcutDisplay(map[listeningAction])}。`); stopListening(); render();
+        }, true);
+        enabled.addEventListener('change', () => { state.shortcutEnabled = enabled.checked; store.set('shortcutEnabled', state.shortcutEnabled); status(state.shortcutEnabled ? '快捷键已开启。' : '快捷键已关闭。'); });
+        document.getElementById('vfa-shortcut-reset')?.addEventListener('click', () => { vfaSaveShortcuts(vfaShortcutCloneDefaults()); stopListening(); render(); status('已恢复原脚本默认快捷键。'); });
+        document.getElementById('vfa-shortcut-close')?.addEventListener('click', () => { stopListening(); modal.classList.remove('show'); });
+        modal.addEventListener('click', e => { if (e.target === modal) { stopListening(); modal.classList.remove('show'); } });
+        render();
+    }
+    function vfaOpenShortcutSettings() { const modal = document.getElementById('vfa-shortcut-modal'); if (!modal) return; vfaInitShortcutUI(); modal.classList.add('show'); }
+    // 子 iframe 内按键无法直接访问顶层弹窗，因此把“定位当前时间”
+    // 专门回传到顶层，由顶层真正点击主界面的同一个按钮入口。
+    if (VFA_IS_TOP) {
+        window.addEventListener('message', e => {
+            const d = e.data;
+            if (!d || d.source !== 'vfa-pro' || d.type !== 'shortcut-action' || !d.fromKeyboard) return;
+            if (!state.shortcutEnabled) return;
+            if (d.action === 'skipIntroSet') {
+                const btn = document.getElementById('vfa-intro-set');
+                if (btn) btn.click();
+                else vfaShortcutAction(d.action);
+                return;
+            }
+            if (d.action === 'skipOutroSet') {
+                const btn = document.getElementById('vfa-outro-set');
+                if (btn) btn.click();
+                else vfaShortcutAction(d.action);
+                return;
+            }
+        }, true);
+    }
+
+    function vfaHandleShortcutKeydown(e) {
+        // 同一个键盘事件同时经过 window/document 时，只允许执行一次。
+        if (e.__vfaShortcutHandled) return;
+        if (!state.shortcutEnabled) return;
+
+        const target = e.target;
+        if (target && (
+            target.closest?.('#vfa-shortcut-modal') ||
+            /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) ||
+            target.isContentEditable
+        )) return;
+
+        const pressed = vfaNormalizeShortcutKey(vfaEventToShortcut(e));
+        if (!pressed) return;
+
+        const map = vfaGetShortcuts();
+        const action = Object.keys(map).find(
+            a => map[a] && vfaNormalizeShortcutKey(map[a]) === pressed
+        );
+        if (!action) return;
+
+        e.__vfaShortcutHandled = true;
+        e.preventDefault();
+        e.stopPropagation();
+
+        try {
+            // 播放器在 iframe 时，片头/片尾定位必须回到顶层主弹窗执行。
+            // 这样才会真正调用主界面的 #vfa-intro-set / #vfa-outro-set。
+            if (!VFA_IS_TOP && (action === 'skipIntroSet' || action === 'skipOutroSet')) {
+                vfaSendToParent('shortcut-action', { action, fromKeyboard: true });
+                return;
+            }
+            const localVideo = getVideo();
+            // 顶层页面没有真实 video、播放器在 iframe 时，把快捷键动作转发给所有播放器 iframe。
+            // postMessage 不受跨域限制，避免必须依赖父页面读取 iframe 内 video。
+            const remotePlaybackActions = new Set([
+                'playPause','seekBack','seekBackLong','seekForward','seekForwardLong',
+                'speedDown','speedReset','speedUp','mute','pip','fullscreen','webFullscreen',
+                'mirror','rotate','abA','abB','abLoop','abReset',
+                'skipIntroSet','skipOutroSet',
+                'progress0','progress10','progress20','progress30','progress40','progress50','progress60','progress70','progress80','progress90'
+            ]);
+            if (VFA_IS_TOP && !localVideo && remotePlaybackActions.has(action)) {
+                // 顶层页面不要依赖 video-state 是否已经上报。某些站点的播放器 iframe
+                // 加载顺序很特殊，可能视频已经可以播放，但状态消息还没来得及到达顶层。
+                // 只要页面存在 iframe，就直接广播一次快捷键动作。
+                const frames = document.querySelectorAll('iframe, frame');
+                if (frames.length) {
+                    vfaBroadcastToFrames('shortcut-action', { action });
+                    // 某些 Gimy 播放线路会在 iframe 获得焦点后完全隔离父页面键盘事件。
+                    // 这里仅负责桥接，不尝试劫持 iframe 焦点，避免影响播放器鼠标操作。
+                    // 同时保留远程状态兼容逻辑，便于主页面 UI 同步。
+                    if (!vfaRemoteVideoState) {
+                        vfaRemoteVideoState = { currentTime: 0, duration: 0, paused: false };
+                    }
+                } else {
+                    vfaShortcutAction(action);
+                }
+            } else {
+                vfaShortcutAction(action);
+            }
+        } catch (err) {
+            console.warn('[VFA] 快捷键执行失败:', action, err);
+        }
+    }
+
+    /*
+     * 快捷键兼容增强：
+     * 1. document-start 尽早安装监听，避免部分视频网站先处理键盘事件。
+     * 2. 同时监听 window + document，兼容不同页面的事件分发方式。
+     * 3. 脚本在跨域 iframe 中也会独立运行，因此 iframe 内播放器可以直接响应快捷键。
+     * 4. 使用事件标记防止 window/document 双监听造成一次按键执行两次。
+     * 5. e.code 回退 + postMessage 动作桥，兼容输入法异常 key 值以及跨域播放器 iframe。
+     */
+    window.addEventListener('keydown', vfaHandleShortcutKeydown, true);
+    document.addEventListener('keydown', vfaHandleShortcutKeydown, true);
+    window.addEventListener('keypress', vfaHandleShortcutKeydown, true);
+
+    // Gimy 等站点可能把播放器放进 blob:/data: 或特殊 iframe。
+    // 这类 iframe 不一定能被普通 @match 命中，因此额外用 @include * 覆盖可匹配的嵌入文档。
+    // 只要本实例真正运行在 iframe 内，就直接监听自己的键盘，不依赖父页面事件冒泡。
+    if (!VFA_IS_TOP) {
+        const vfaChildKeyBridge = e => {
+            if (e.__vfaShortcutHandled) return;
+            vfaHandleShortcutKeydown(e);
+        };
+        window.addEventListener('keydown', vfaChildKeyBridge, true);
+    }
+
+    // 非顶层 iframe 主动通知父页面自己已加载，并在播放器动态切换后重新握手。
+    // 这不依赖播放器自身 API，目的是让多层 iframe 桥在页面后续切换线路时仍然存在。
+    if (!VFA_IS_TOP) {
+        const vfaFrameHandshake = () => {
+            try { vfaSendToParent('vfa-ready'); } catch { }
+        };
+        setTimeout(vfaFrameHandshake, 50);
+        setTimeout(vfaFrameHandshake, 500);
+        setTimeout(vfaFrameHandshake, 1500);
+    }
+
     /* ---------------- 面板 UI ---------------- */
     function buildUI() {
         if (document.getElementById('vfa-root')) return;
@@ -4496,10 +5082,10 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
       <span class="vfa-chip vfa-fps" id="vfa-fps">-- FPS</span>
     </div>
     <div class="vfa-label">⚡ 倍速播放</div>
-    <div class="vfa-row">
-      <button class="vfa-ico" data-a="slower">−</button>
-      <span id="vfa-speed">1x</span>
-      <button class="vfa-ico" data-a="faster">＋</button>
+    <div class="vfa-row vfa-speed-main-row">
+      <button class="vfa-ico" data-a="slower" title="按自定义步进降低倍速">−</button>
+      <button id="vfa-speed" class="vfa-speed-value" type="button" title="点击自定义倍速">1x</button>
+      <button class="vfa-ico" data-a="faster" title="按自定义步进提高倍速">＋</button>
     </div>
     <div class="vfa-row">
       <button class="vfa-btn" data-a="set" data-v="0.5">0.5x</button>
@@ -4507,6 +5093,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
       <button class="vfa-btn" data-a="set" data-v="1.5">1.5x</button>
       <button class="vfa-btn" data-a="set" data-v="2">2x</button>
       <button class="vfa-btn" data-a="set" data-v="3">3x</button>
+    </div>
+    <div class="vfa-row vfa-speed-step-row">
+      <button id="vfa-speed-step" class="vfa-btn vfa-speed-step-btn" type="button" title="点击修改倍速步进">步进 0.25x · 点击调整</button>
     </div>
 
     <div class="vfa-label">🔁 A-B 循环</div>
@@ -4634,14 +5223,31 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         <button class="vfa-btn" data-a="pip">📺 画中画</button>
     </div>
 
+    <div class="vfa-label">⌨️ 快捷键</div>
+    <div id="vfa-shortcut-entry" class="vfa-row" style="margin-bottom:2px">
+        <span class="vfa-shortcut-summary">可调整已有快捷键，默认保留 Z / X / C 倍速与原有播放控制</span>
+        <button class="vfa-btn" id="vfa-shortcut-open" type="button" style="flex:none">⌨️ 快捷键设置</button>
+    </div>
+
 </div>
-
-
+<div id="vfa-shortcut-modal" aria-hidden="true">
+  <div id="vfa-shortcut-card" role="dialog" aria-modal="true" aria-label="快捷键设置">
+    <div id="vfa-shortcut-head"><div><strong>⌨️ 快捷键设置</strong><small>保留原有快捷键逻辑；点击「设置」后直接按下新的按键或组合键</small></div><button id="vfa-shortcut-close" type="button" class="vfa-shortcut-edit">关闭</button></div>
+    <div id="vfa-shortcut-list"></div>
+    <div id="vfa-shortcut-foot"><span id="vfa-shortcut-status" class="vfa-shortcut-status">快捷键默认开启，按需修改即可。</span><label style="display:flex;align-items:center;gap:5px;font-size:10px;white-space:nowrap"><input id="vfa-shortcut-enabled" type="checkbox"> 开启</label><button id="vfa-shortcut-reset" type="button">恢复默认</button></div>
+  </div>
 </div>`;
         const style = document.createElement('style');
         style.textContent = GLASS_CSS;
         document.head.appendChild(style);
         document.body.appendChild(root);
+
+        // 快捷键设置弹窗移到 body 顶层，避免被脚本根节点/面板的层叠、裁剪或变换影响。
+        // 这样无论面板当前滚动到哪里，点击“快捷键设置”都能正常显示全屏遮罩。
+        const shortcutModal = root.querySelector('#vfa-shortcut-modal');
+        if (shortcutModal) {
+            document.body.appendChild(shortcutModal);
+        }
 
         state.wrap = root.querySelector('#vfa-wrap');
         state.panel = root.querySelector('#vfa-panel');
@@ -4652,12 +5258,16 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
                 if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); vfaStartUpdate(); }
             });
         }
+        document.getElementById('vfa-shortcut-open')?.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); vfaOpenShortcutSettings(); });
+        vfaInitShortcutUI();
         applyPos();
         initDrag(root.querySelector('#vfa-fab'));
         // 打开面板时同步一次开关状态，防止 SPA 页面刷新后面板与实际状态不一致
         const syncOnOpen = () => {
             refreshSwitches();
             state.panel.querySelector('#vfa-speed').textContent = (+state.speed.toFixed(2)) + 'x';
+            const stepEl = state.panel.querySelector('#vfa-speed-step');
+            if (stepEl) stepEl.textContent = `步进 ${+(Number(state.speedStep) || 0.25).toFixed(2)}x`;
         };
         state.wrap.addEventListener('mouseenter', syncOnOpen);
 
@@ -4675,13 +5285,23 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
         // 面板内 pointerdown 冒泡阶段拦截（不在捕获阶段拦，否则自己收不到事件）
         state.panel.addEventListener('pointerdown', e => e.stopPropagation());
+        state.panel.querySelector('#vfa-speed')?.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            vfaEditSpeed();
+        });
+        state.panel.querySelector('#vfa-speed-step')?.addEventListener('click', e => {
+            e.preventDefault();
+            e.stopPropagation();
+            vfaEditSpeedStep();
+        });
 
         root.addEventListener('click', e => {
             const btn = e.target.closest('.vfa-btn,.vfa-ico,.vfa-episode-btn');
             if (btn) {
                 const a = btn.dataset.a;
-                if (a === 'faster') setSpeed((getVideo()?.playbackRate || 1) + 0.25);
-                else if (a === 'slower') setSpeed((getVideo()?.playbackRate || 1) - 0.25);
+                if (a === 'faster') setSpeed((getVideo()?.playbackRate || state.speed || 1) + (state.speedStep || 0.25));
+                else if (a === 'slower') setSpeed((getVideo()?.playbackRate || state.speed || 1) - (state.speedStep || 0.25));
                 else if (a === 'set') setSpeed(parseFloat(btn.dataset.v));
                 else if (a === 'mirror') toggleMirror();
                 else if (a === 'rotate') rotate();
@@ -4805,8 +5425,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             const media = getSkipMediaState(v);
             if (!v && !(VFA_IS_TOP && vfaRemoteVideoState)) { toast('⚠️ 当前没有可用视频'); return; }
             const t = media.currentTime;
-            setSkipIntroValue(t);
-            toast(`⏭ 片头已定位到 ${formatSkipTime(t, media.duration)}`);
+            if (!setSkipIntroValue(t)) return;
+            // 明确提示刚刚设置的片头时间点，鼠标点击和快捷键均使用这里的提示。
+            toast(`⏭ 片头时间点已设置：${formatSkipTime(t, media.duration)}`);
         }
 
         function setSkipOutroToCurrentTime() {
@@ -4814,8 +5435,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             const media = getSkipMediaState(v);
             if (!v && !(VFA_IS_TOP && vfaRemoteVideoState)) { toast('⚠️ 当前没有可用视频'); return; }
             const t = media.currentTime;
-            setSkipOutroValue(t);
-            toast(`⏭ 片尾已定位到 ${formatSkipTime(t, media.duration)}`);
+            if (!setSkipOutroValue(t)) return;
+            // 明确提示刚刚设置的片尾时间点，鼠标点击和快捷键均使用这里的提示。
+            toast(`⏭ 片尾时间点已设置：${formatSkipTime(t, media.duration)}`);
         }
 
         function resetSkipIntroValue() {
@@ -4938,6 +5560,8 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         renderDmChips();
         updateAbUI();
         state.panel.querySelector('#vfa-speed').textContent = (+state.speed.toFixed(2)) + 'x';
+        const speedStepEl = state.panel.querySelector('#vfa-speed-step');
+        if (speedStepEl) speedStepEl.textContent = `步进 ${+(Number(state.speedStep) || 0.25).toFixed(2)}x`;
         startFps();
         window.addEventListener('resize', () => { applyPos(); if (state.open) { fitPanelToViewport(); placePanel(); } });
     }
@@ -5658,26 +6282,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     }
 
 
-    /* ---------------- 快捷键 ---------------- */
     document.addEventListener('keydown', e => {
-        if (e.target.matches('input,textarea,[contenteditable="true"]')) return;
-        if (e.altKey && e.key.toLowerCase() === 'v') { state.open ? closePanel() : openPanel(); return; }
-        if (e.key === 'Escape' && state.open) { closePanel(); return; }
-        const v = getVideo();
-        if (!v) return;
-        switch (e.key) {
-            case 'z': setSpeed(v.playbackRate - 0.25); break;
-            case 'x': setSpeed(1); break;
-            case 'c': setSpeed(v.playbackRate + 0.25); break;
-            case 'ArrowLeft': nudge(e.shiftKey ? -30 : -5); e.preventDefault(); break;
-            case 'ArrowRight': nudge(e.shiftKey ? 30 : 5); e.preventDefault(); break;
-            case ' ': togglePlay(); e.preventDefault(); e.stopImmediatePropagation(); break; // 阻止站点双重响应
-            case 'm': v.muted = !v.muted; toast(v.muted ? '🔇 静音' : '🔊 有声'); break;
-            case 'p': togglePip(); break;
-        }
-        if (/^[0-9]$/.test(e.key) && v.duration) {
-            v.currentTime = v.duration * (+e.key / 10);
-            toast(`⏱ ${+e.key * 10}%`);
+        if (e.key === 'Escape' && state.open && !document.getElementById('vfa-shortcut-modal')?.classList.contains('show')) {
+            closePanel();
         }
     }, true);
 
