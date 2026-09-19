@@ -2,9 +2,9 @@
 // @author       Rain
 // @name         视频小助手Pro版（液态玻璃版）
 // @namespace    video-flow-assistant-pro1
-// @version      2.4.9
-// @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
+// @version      2.4.10
 // @license      MIT
+// @description  A-B循环/音量记忆/全屏控制 + 液态玻璃质感 · 可拖拽悬浮球 + 跟随弹窗 + 离开自动收回 · 倍速/镜像/旋转/画中画 + 智能流畅模式（隐藏弹幕、冻结动画、暂停离屏视频、FPS监控自动降载）。支持抖音、哔哩哔哩等任意视频网站。
 // @match        *://*/*
 // @include      *
 // @exclude      *://localhost*
@@ -899,10 +899,11 @@ html[vfa-smooth] #vfa-fab, html[vfa-smooth] #vfa-panel { backdrop-filter:none !i
     isolation:isolate;
 }
 
-#vfa-panel.show { display:block; animation:vfa-pop .32s cubic-bezier(.2,.9,.3,1.35); }
-#vfa-panel.hide { animation:vfa-out .22s ease forwards; }
-@keyframes vfa-pop { from{opacity:0;transform:scale(.85) translateY(6px);} to{opacity:1;transform:none;} }
-@keyframes vfa-out { to{opacity:0;transform:scale(.85);} }
+#vfa-panel.show { display:flex; flex-direction:column; gap:12px; animation:vfa-panel-pop .24s ease-out; }
+/* 开关过程中始终保持同一套 Flex 布局，避免模块因 display 切换而上下跳动。 */
+#vfa-panel.show.hide { display:flex !important; flex-direction:column !important; gap:12px !important; overflow-y:auto !important; overflow-x:hidden !important; animation:vfa-panel-out .20s ease-out forwards; }
+@keyframes vfa-panel-pop { from{opacity:0;} to{opacity:1;} }
+@keyframes vfa-panel-out { from{opacity:1;} to{opacity:0;} }
 #vfa-panel::before {
     content:''; position:absolute; top:-60%; left:-30%;
     width:90%; height:120%; pointer-events:none;
@@ -2069,7 +2070,10 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 #vfa-shortcut-list::-webkit-scrollbar-thumb { background:linear-gradient(180deg,rgba(255,255,255,.34),rgba(255,255,255,.18)); border:1px solid rgba(255,255,255,.12); border-radius:999px; }
 #vfa-shortcut-list::-webkit-scrollbar-thumb:hover { background:rgba(255,255,255,.46); }
 #vfa-shortcut-list::-webkit-scrollbar-corner { background:transparent; }
-.vfa-shortcut-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; align-items:center; gap:6px; padding:9px 4px; border-bottom:1px solid rgba(255,255,255,.06); }
+.vfa-shortcut-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto auto; align-items:center; gap:6px; padding:9px 4px; border-bottom:1px solid rgba(255,255,255,.06); transition:background .2s ease, border-color .2s ease, box-shadow .2s ease; }
+.vfa-shortcut-row.conflict { background:rgba(255,92,92,.12); border-bottom-color:rgba(255,105,105,.38); box-shadow:inset 3px 0 0 rgba(255,105,105,.9); border-radius:8px; }
+.vfa-shortcut-row.conflict .vfa-shortcut-name { color:#ffd1d1; font-weight:700; }
+.vfa-shortcut-row.conflict .vfa-shortcut-key { border-color:rgba(255,105,105,.72); background:rgba(255,82,82,.18); color:#fff; box-shadow:0 0 0 1px rgba(255,105,105,.12), 0 0 12px rgba(255,82,82,.12); }
 .vfa-shortcut-name { min-width:0; font-size:12px; }
 .vfa-shortcut-key { min-width:76px; max-width:180px; padding:6px 9px; border-radius:9px; border:1px solid rgba(255,255,255,.15); background:rgba(255,255,255,.07); color:#fff; text-align:center; font:600 11px/1.2 inherit; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .vfa-shortcut-key.unset { opacity:.45; }
@@ -2077,7 +2081,8 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 .vfa-shortcut-edit:hover, .vfa-shortcut-clear:hover { background:rgba(255,255,255,.16); }
 .vfa-shortcut-edit.listening { background:rgba(59,130,246,.35); border-color:rgba(96,165,250,.7); }
 #vfa-shortcut-foot { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px 14px 14px; border-top:1px solid rgba(255,255,255,.1); }
-#vfa-shortcut-foot .vfa-shortcut-status { flex:1; min-width:0; font-size:10px; opacity:.55; line-height:1.35; }
+#vfa-shortcut-foot .vfa-shortcut-status { flex:1; min-width:0; font-size:10px; opacity:.55; line-height:1.35; transition:color .2s ease, opacity .2s ease, text-shadow .2s ease; }
+#vfa-shortcut-foot .vfa-shortcut-status.conflict { color:#ff9b9b; opacity:1; font-weight:700; text-shadow:0 0 10px rgba(255,82,82,.28); }
 #vfa-shortcut-foot button { padding:7px 11px; border-radius:10px; border:1px solid rgba(255,255,255,.16); background:rgba(255,255,255,.08); color:#fff; cursor:pointer; font:600 11px/1.2 inherit; }
 #vfa-shortcut-foot button:hover { background:rgba(255,255,255,.16); }
 @media (max-width:600px) {
@@ -2093,11 +2098,12 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         width:420px !important;
         max-width:420px !important;
         height:auto !important;
-        max-height:calc(100vh - 16px) !important;
+        max-height:calc(100dvh - 24px) !important;
         overflow-y:auto !important;
         overflow-x:hidden !important;
         -webkit-overflow-scrolling:touch !important;
         touch-action:pan-y !important;
+        overscroll-behavior:contain !important;
         box-sizing:border-box !important;
         transform-origin:top left !important;
         animation:none !important;
@@ -2275,6 +2281,15 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
     function vfaMoveToastToFullscreenHost() {
         const el = document.getElementById('vfa-toast');
+        if (!el) return;
+        const host = vfaGetToastHost();
+        if (host && el.parentElement !== host) host.appendChild(el);
+    }
+
+    // 无人观看确认弹窗也必须进入同一个全屏层，否则真正的 Fullscreen API
+    // 下 document.body 会被排除在全屏渲染树之外，倒计时弹窗会直接看不见。
+    function vfaMoveIdleDialogToFullscreenHost() {
+        const el = document.getElementById('vfa-idle-mask');
         if (!el) return;
         const host = vfaGetToastHost();
         if (host && el.parentElement !== host) host.appendChild(el);
@@ -3397,6 +3412,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     document.addEventListener('keydown', vfaHandleWebFullscreenEscape, true);
     document.addEventListener('fullscreenchange', () => {
         vfaMoveToastToFullscreenHost();
+        vfaMoveIdleDialogToFullscreenHost();
         if (state.webFullscreen === 'native' && !document.fullscreenElement) {
             const target = state.webFullscreenVideo;
             try { target?.classList.remove('vfa-web-fullscreen-native'); } catch {}
@@ -4481,7 +4497,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     // 面板出现在图标旁（缓存尺寸，不在拖拽帧内做布局读取）
     const dims = { pw: 236, ph: 400 };
 
-    /* 手机端按屏幕实际宽高计算缩放比例，保证整个弹窗一次完整显示。 */
+    /* 手机端按屏幕实际宽高计算缩放比例，保证弹窗底部留出安全区。关闭时只淡出，避免缩放动画覆盖当前视觉尺寸。 */
     function fitPanelToViewport() {
         if (!state.panel) return;
 
@@ -4498,7 +4514,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         panel.style.animation = 'none';
         panel.style.transform = 'none';
         panel.style.transformOrigin = 'top left';
-        panel.style.maxHeight = 'calc(100vh - 16px)';
+        panel.style.maxHeight = 'calc(100dvh - 24px)';
         panel.style.overflowY = 'auto';
         panel.style.overflowX = 'hidden';
         panel.style.touchAction = 'pan-y';
@@ -4511,7 +4527,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         const viewportWidth = Math.max(1, viewport ? viewport.width : innerWidth);
         const viewportHeight = Math.max(1, viewport ? viewport.height : innerHeight);
         const availableWidth = Math.max(1, viewportWidth - 16);
-        const availableHeight = Math.max(1, viewportHeight - 16);
+        const availableHeight = Math.max(1, viewportHeight - 24);
 
         // 宽高同时参与计算，取较小值，确保任何一边都不会被裁掉。
         const scale = Math.min(1, availableWidth / naturalWidth, availableHeight / naturalHeight);
@@ -4582,7 +4598,7 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
          * 先准备好面板的最终玻璃状态，
          * 避免 display:none -> block 时出现白色闪帧。
          */
-        panel.style.display = 'block';
+        panel.style.display = 'flex';
 
         /*
          * 强制保持玻璃背景，
@@ -4647,9 +4663,24 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
     function closePanel() {
         if (!state.panel || !state.open) return;
         state.open = false;
-        state.panel.classList.remove('show');
+
+        /*
+         * 关闭时不要先移除 .show。
+         * 先移除 .show 会让面板瞬间回到 display:none，浏览器会立即重算
+         * 内容宽度/滚动区域，随后又执行 hide 动画，于是视觉上会出现
+         * “整个布局往前缩一下”的现象。
+         * 保持 .show 直到淡出结束，只做 opacity 动画，可以避免这次重排。
+         */
         state.panel.classList.add('hide');
-        setTimeout(() => { if (!state.open) state.panel.style.display = ''; }, 220);
+        setTimeout(() => {
+            if (!state.open && state.panel) {
+                state.panel.classList.remove('hide');
+                state.panel.classList.remove('show');
+                state.panel.style.display = '';
+                state.panel.style.opacity = '';
+                state.panel.style.visibility = '';
+            }
+        }, 230);
     }
 
     /* ---------------- 拖拽（GPU 渲染） ---------------- */
@@ -4904,18 +4935,20 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         if (!modal || !list || !enabled || modal.dataset.vfaReady === '1') return;
         modal.dataset.vfaReady = '1';
         let listeningAction = null, listeningButton = null;
-        const status = msg => { const el = document.getElementById('vfa-shortcut-status'); if (el) el.textContent = msg; };
-        const stopListening = () => { if (listeningButton) listeningButton.classList.remove('listening'); listeningAction = null; listeningButton = null; };
+        let conflictActions = new Set();
+        const status = (msg, isConflict = false) => { const el = document.getElementById('vfa-shortcut-status'); if (el) { el.textContent = msg; el.classList.toggle('conflict', !!isConflict); } };
+        const stopListening = () => { modal.dataset.vfaListening = '0'; if (listeningButton) listeningButton.classList.remove('listening'); listeningAction = null; listeningButton = null; };
         const render = () => {
             const map = vfaGetShortcuts();
-            list.innerHTML = Object.entries(VFA_SHORTCUT_DEFAULTS).map(([action,item]) => `<div class="vfa-shortcut-row" data-shortcut-action="${action}"><span class="vfa-shortcut-name">${item.label}</span><button type="button" class="vfa-shortcut-key ${map[action]?'':'unset'}" data-shortcut-key>${vfaShortcutDisplay(map[action])}</button><button type="button" class="vfa-shortcut-edit" data-shortcut-edit>设置</button><button type="button" class="vfa-shortcut-clear" data-shortcut-clear>清除</button></div>`).join('');
+            list.innerHTML = Object.entries(VFA_SHORTCUT_DEFAULTS).map(([action,item]) => `<div class="vfa-shortcut-row ${conflictActions.has(action)?'conflict':''}" data-shortcut-action="${action}"><span class="vfa-shortcut-name">${item.label}</span><button type="button" class="vfa-shortcut-key ${map[action]?'':'unset'}" data-shortcut-key>${vfaShortcutDisplay(map[action])}</button><button type="button" class="vfa-shortcut-edit" data-shortcut-edit>设置</button><button type="button" class="vfa-shortcut-clear" data-shortcut-clear>清除</button></div>`).join('');
             enabled.checked = !!state.shortcutEnabled;
         };
         list.addEventListener('click', e => {
             const row = e.target.closest('.vfa-shortcut-row'); if (!row) return;
             const action = row.dataset.shortcutAction;
             if (e.target.closest('[data-shortcut-edit],[data-shortcut-key]')) {
-                stopListening(); listeningAction = action; listeningButton = row.querySelector('[data-shortcut-edit]'); listeningButton.classList.add('listening'); status(`正在设置「${VFA_SHORTCUT_DEFAULTS[action].label}」，请按下组合键…`);
+                conflictActions.clear(); render();
+                stopListening(); listeningAction = action; listeningButton = row.querySelector('[data-shortcut-edit]'); modal.dataset.vfaListening = '1'; listeningButton.classList.add('listening'); status(`正在设置「${VFA_SHORTCUT_DEFAULTS[action].label}」，请按下组合键…`);
             } else if (e.target.closest('[data-shortcut-clear]')) {
                 const map = vfaGetShortcuts(); map[action] = ''; vfaSaveShortcuts(map); render(); status('已清除该功能的快捷键。');
             }
@@ -4927,11 +4960,19 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
             const key = vfaEventToShortcut(e); if (!key) return;
             const map = vfaGetShortcuts();
             const conflict = Object.entries(map).find(([a,k]) => a !== listeningAction && k && vfaNormalizeShortcutKey(k) === vfaNormalizeShortcutKey(key));
-            if (conflict) { status(`快捷键 ${vfaShortcutDisplay(key)} 已分配给「${VFA_SHORTCUT_DEFAULTS[conflict[0]].label}」。`); return; }
+            if (conflict) {
+                conflictActions = new Set([listeningAction, conflict[0]]);
+                render();
+                status(`⚠ 快捷键 ${vfaShortcutDisplay(key)} 已分配给「${VFA_SHORTCUT_DEFAULTS[conflict[0]].label}」，请更换按键。`, true);
+                const conflictRow = list.querySelector(`[data-shortcut-action="${conflict[0]}"]`);
+                conflictRow?.scrollIntoView({ block:'nearest', behavior:'smooth' });
+                return;
+            }
+            conflictActions.clear();
             map[listeningAction] = vfaNormalizeShortcutKey(key); vfaSaveShortcuts(map); status(`已设置「${VFA_SHORTCUT_DEFAULTS[listeningAction].label}」为 ${vfaShortcutDisplay(map[listeningAction])}。`); stopListening(); render();
         }, true);
         enabled.addEventListener('change', () => { state.shortcutEnabled = enabled.checked; store.set('shortcutEnabled', state.shortcutEnabled); status(state.shortcutEnabled ? '快捷键已开启。' : '快捷键已关闭。'); });
-        document.getElementById('vfa-shortcut-reset')?.addEventListener('click', () => { vfaSaveShortcuts(vfaShortcutCloneDefaults()); stopListening(); render(); status('已恢复原脚本默认快捷键。'); });
+        document.getElementById('vfa-shortcut-reset')?.addEventListener('click', () => { conflictActions.clear(); vfaSaveShortcuts(vfaShortcutCloneDefaults()); stopListening(); render(); status('已恢复原脚本默认快捷键。'); });
         document.getElementById('vfa-shortcut-close')?.addEventListener('click', () => { stopListening(); modal.classList.remove('show'); });
         modal.addEventListener('click', e => { if (e.target === modal) { stopListening(); modal.classList.remove('show'); } });
         render();
@@ -4963,6 +5004,12 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
         // 同一个键盘事件同时经过 window/document 时，只允许执行一次。
         if (e.__vfaShortcutHandled) return;
         if (!state.shortcutEnabled) return;
+
+        const shortcutModal = document.getElementById('vfa-shortcut-modal');
+        // 正在录入快捷键时，当前按键只能用于“设置快捷键”，绝不能同时触发已有快捷键功能。
+        // 这一步必须放在所有快捷键匹配逻辑之前，否则例如 M 已绑定“静音”时，
+        // 在“画中画”里录入 M 仍可能先被全局快捷键监听器执行。
+        if (shortcutModal?.classList.contains('show') && shortcutModal.dataset.vfaListening === '1') return;
 
         const target = e.target;
         if (target && (
@@ -6490,6 +6537,9 @@ html[vfa-danmaku] .bpx-player-dm, html[vfa-danmaku] .xg-danmaku {
 
 `;
         document.body.appendChild(mask);
+        // 如果当前已经处于真正的浏览器全屏，body 不属于全屏渲染层。
+        // 立即把弹窗移动到全屏元素内部，确保 30 秒倒计时界面可见。
+        vfaMoveIdleDialogToFullscreenHost();
         requestAnimationFrame(() => mask.classList.add('show'));   // 显示弹窗(否则 display:none 隐形)
         const finish = (keep) => {
             clearInterval(timer);
